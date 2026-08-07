@@ -182,7 +182,8 @@ export function WhiteboardApp() {
       });
 
     if ("serviceWorker" in navigator && location.protocol === "https:") {
-      void navigator.serviceWorker.register("/sw.js").catch(() => undefined);
+      const serviceWorkerUrl = new URL("sw.js", document.baseURI).toString();
+      void navigator.serviceWorker.register(serviceWorkerUrl).catch(() => undefined);
     }
 
     const updateOnline = () => setOnline(navigator.onLine);

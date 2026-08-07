@@ -1,5 +1,6 @@
 const CACHE_NAME = "canvasroom-shell-v1";
-const SHELL = ["/"];
+const SCOPE_PATH = new URL(self.registration.scope).pathname;
+const SHELL = [SCOPE_PATH];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(SHELL)));
@@ -24,6 +25,6 @@ self.addEventListener("fetch", (event) => {
         }
         return response;
       })
-      .catch(() => caches.match(event.request).then((cached) => cached ?? caches.match("/"))),
+      .catch(() => caches.match(event.request).then((cached) => cached ?? caches.match(SCOPE_PATH))),
   );
 });

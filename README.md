@@ -27,3 +27,15 @@ npm run lint
 npx tsc --noEmit
 node --test tests/rendered-html.test.mjs
 ```
+
+## GitHub Pages
+
+The repository includes a separate static build that keeps all whiteboard data and media local to the browser:
+
+```bash
+npm run build:pages
+```
+
+The generated site is written to `dist-pages/`. The included GitHub Actions workflow builds and deploys that directory whenever `main` is pushed. In the repository settings, choose **GitHub Actions** as the Pages source. The resulting project URL is:
+
+`https://jeetblahiri.github.io/canvasroom/`
