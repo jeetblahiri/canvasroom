@@ -34,6 +34,19 @@ export interface WebcamOverlayOptions {
   mirror?: boolean;
 }
 
+export interface RecordingToolRailItem {
+  id: string;
+  label: string;
+  shortcut: string;
+}
+
+export interface RecordingToolRailOptions {
+  activeTool: string;
+  /** Width of the on-screen rail in CSS pixels. */
+  width?: number;
+  items: RecordingToolRailItem[];
+}
+
 export interface RecordingStartOptions {
   /** The preferred board source. It must be origin-clean for captureStream(). */
   sourceCanvas?: HTMLCanvasElement | null;
@@ -48,6 +61,8 @@ export interface RecordingStartOptions {
   videoBitsPerSecond?: number;
   preferredMimeTypes?: string[];
   webcam?: Partial<WebcamOverlayOptions>;
+  /** Draw a presentation-safe copy of the pen toolbar beside the board. */
+  toolRail?: RecordingToolRailOptions;
 }
 
 export interface RecordingResult {
@@ -199,17 +214,67 @@ function drawContained(
   sourceHeight: number,
   targetWidth: number,
   targetHeight: number,
+  targetX = 0,
+  targetY = 0,
 ): void {
   const scale = Math.min(targetWidth / sourceWidth, targetHeight / sourceHeight);
   const width = sourceWidth * scale;
   const height = sourceHeight * scale;
   context.drawImage(
     source,
-    (targetWidth - width) / 2,
-    (targetHeight - height) / 2,
+    targetX + (targetWidth - width) / 2,
+    targetY + (targetHeight - height) / 2,
     width,
     height,
   );
+}
+
+function drawRecordingToolRail(
+  context: CanvasRenderingContext2D,
+  options: RecordingToolRailOptions,
+  width: number,
+  height: number,
+): void {
+  context.save();
+  context.fillStyle = "#111513";
+  context.fillRect(0, 0, width, height);
+  context.strokeStyle = "rgba(255,255,255,0.12)";
+  context.lineWidth = Math.max(1, width * 0.015);
+  context.beginPath();
+  context.moveTo(width - context.lineWidth / 2, 0);
+  context.lineTo(width - context.lineWidth / 2, height);
+  context.stroke();
+
+  const items = options.items.slice(0, 14);
+  const gap = Math.max(4, width * 0.08);
+  const horizontalPadding = Math.max(6, width * 0.16);
+  const availableWidth = Math.max(16, width - horizontalPadding * 2);
+  const availableHeight = Math.max(40, height - gap * 2);
+  const buttonSize = Math.max(16, Math.min(availableWidth, (availableHeight - gap * Math.max(0, items.length - 1)) / Math.max(1, items.length)));
+  const totalHeight = items.length * buttonSize + Math.max(0, items.length - 1) * gap;
+  let y = Math.max(gap, (height - totalHeight) / 2);
+
+  context.textAlign = "center";
+  context.textBaseline = "middle";
+  for (const item of items) {
+    const x = (width - buttonSize) / 2;
+    const active = item.id === options.activeTool;
+    const radius = Math.max(4, buttonSize * 0.2);
+    context.beginPath();
+    context.roundRect(x, y, buttonSize, buttonSize, radius);
+    context.fillStyle = active ? "#cdf458" : "rgba(255,255,255,0.065)";
+    context.fill();
+    if (active) {
+      context.strokeStyle = "rgba(205,244,88,0.72)";
+      context.lineWidth = Math.max(1, buttonSize * 0.04);
+      context.stroke();
+    }
+    context.fillStyle = active ? "#111513" : "#eef2ef";
+    context.font = `700 ${Math.max(9, buttonSize * 0.34)}px ui-sans-serif, system-ui, sans-serif`;
+    context.fillText(item.shortcut, width / 2, y + buttonSize / 2, buttonSize * 0.72);
+    y += buttonSize + gap;
+  }
+  context.restore();
 }
 
 function drawVideoCover(
@@ -407,6 +472,8 @@ export class WhiteboardRecorder {
   private lastDrawAt = 0;
   private disposed = false;
   private sourceEndedHandler: (() => void) | null = null;
+  private toolRail: RecordingToolRailOptions | null = null;
+  private toolRailRenderWidth = 0;
 
   constructor(callbacks: RecordingCallbacks = {}) {
     this.callbacks = callbacks;
@@ -436,6 +503,11 @@ export class WhiteboardRecorder {
 
   updateWebcamOverlay(webcam: Partial<WebcamOverlayOptions>): void {
     this.overlay = { ...this.overlay, ...webcam };
+    if (this.status === "previewing") this.drawFrame();
+  }
+
+  updateToolRail(toolRail?: RecordingToolRailOptions): void {
+    this.toolRail = toolRail ? { ...toolRail, items: [...toolRail.items] } : null;
     if (this.status === "previewing") this.drawFrame();
   }
 
@@ -469,6 +541,7 @@ export class WhiteboardRecorder {
     this.totalPausedMs = 0;
     this.frameRate = Math.min(60, Math.max(12, options.frameRate ?? 30));
     this.overlay = { ...DEFAULT_WEBCAM, ...options.webcam };
+    this.toolRail = options.toolRail ? { ...options.toolRail, items: [...options.toolRail.items] } : null;
     this.mimeType = selectRecordingMimeType(options.preferredMimeTypes);
     this.setStatus("preparing");
 
@@ -502,6 +575,7 @@ export class WhiteboardRecorder {
       await this.prepare(options);
     } else {
       this.overlay = { ...this.overlay, ...options.webcam };
+      this.updateToolRail(options.toolRail);
     }
 
     try {
@@ -607,8 +681,14 @@ export class WhiteboardRecorder {
       this.sourceCanvas?.width || this.sourceVideo?.videoWidth || settings?.width || 1920;
     const sourceHeight =
       this.sourceCanvas?.height || this.sourceVideo?.videoHeight || settings?.height || 1080;
+    const sourceCssWidth = this.sourceCanvas?.clientWidth || sourceWidth;
+    const sourcePixelRatio = sourceWidth / Math.max(1, sourceCssWidth);
+    const toolRailSourceWidth = this.toolRail
+      ? Math.max(36, this.toolRail.width ?? 58) * sourcePixelRatio
+      : 0;
+    const totalSourceWidth = sourceWidth + toolRailSourceWidth;
     const dimensions = fitWithin(
-      sourceWidth,
+      totalSourceWidth,
       sourceHeight,
       options.maxWidth ?? 1920,
       options.maxHeight ?? 1080,
@@ -617,6 +697,9 @@ export class WhiteboardRecorder {
     this.compositorCanvas = document.createElement("canvas");
     this.compositorCanvas.width = dimensions.width;
     this.compositorCanvas.height = dimensions.height;
+    this.toolRailRenderWidth = toolRailSourceWidth > 0
+      ? Math.max(1, Math.round(dimensions.width * toolRailSourceWidth / totalSourceWidth))
+      : 0;
     this.compositorContext = this.compositorCanvas.getContext("2d", {
       alpha: false,
       desynchronized: true,
@@ -685,14 +768,26 @@ export class WhiteboardRecorder {
     context.fillStyle = "#ffffff";
     context.fillRect(0, 0, canvas.width, canvas.height);
 
+    const boardX = this.toolRailRenderWidth;
+    const boardWidth = Math.max(1, canvas.width - boardX);
+    if (this.toolRail && this.toolRailRenderWidth > 0) {
+      drawRecordingToolRail(
+        context,
+        this.toolRail,
+        this.toolRailRenderWidth,
+        canvas.height,
+      );
+    }
+
     if (this.sourceCanvas) {
       drawContained(
         context,
         this.sourceCanvas,
         this.sourceCanvas.width,
         this.sourceCanvas.height,
-        canvas.width,
+        boardWidth,
         canvas.height,
+        boardX,
       );
     } else if (this.sourceVideo && this.sourceVideo.readyState >= 2) {
       drawContained(
@@ -700,8 +795,9 @@ export class WhiteboardRecorder {
         this.sourceVideo,
         this.sourceVideo.videoWidth,
         this.sourceVideo.videoHeight,
-        canvas.width,
+        boardWidth,
         canvas.height,
+        boardX,
       );
     }
     context.restore();
@@ -724,17 +820,19 @@ export class WhiteboardRecorder {
       large: 0.29,
     };
     const margin = Math.max(8, this.overlay.margin ?? DEFAULT_WEBCAM.margin!);
+    const contentLeft = this.toolRailRenderWidth;
+    const contentWidth = Math.max(1, width - contentLeft);
     const size = Math.round(
       Math.min(
-        Math.max(96, width * ratios[this.overlay.size]),
-        width - margin * 2,
+        Math.max(96, contentWidth * ratios[this.overlay.size]),
+        contentWidth - margin * 2,
         height - margin * 2,
         height * 0.46,
       ),
     );
     const left = this.overlay.position.endsWith("left");
     const top = this.overlay.position.startsWith("top");
-    const x = left ? margin : width - size - margin;
+    const x = left ? contentLeft + margin : width - size - margin;
     const y = top ? margin : height - size - margin;
 
     context.save();
@@ -912,6 +1010,8 @@ export class WhiteboardRecorder {
     this.sourceCanvas = null;
     this.compositorCanvas = null;
     this.compositorContext = null;
+    this.toolRail = null;
+    this.toolRailRenderWidth = 0;
     this.mediaRecorder = null;
 
     if (this.audioContext && this.audioContext.state !== "closed") {

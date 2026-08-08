@@ -1,5 +1,7 @@
 "use client";
 
+import type { BoardViewport } from "./board-types";
+
 const DATABASE_NAME = "canvas-room-local";
 const DATABASE_VERSION = 1;
 const BOARDS_STORE = "boards";
@@ -9,6 +11,7 @@ export type StoredBoard<TSnapshot = unknown> = {
   id: string;
   title: string;
   snapshot: TSnapshot;
+  viewport?: BoardViewport;
   createdAt: string;
   updatedAt: string;
 };
@@ -81,13 +84,13 @@ export async function loadBoard<TSnapshot>(id: string): Promise<StoredBoard<TSna
   return result;
 }
 
-export async function listBoards(): Promise<StoredBoard[]> {
+export async function listBoards<TSnapshot = unknown>(): Promise<StoredBoard<TSnapshot>[]> {
   const database = await openDatabase();
   const transaction = database.transaction(BOARDS_STORE, "readonly");
   const request = transaction.objectStore(BOARDS_STORE).getAll();
 
-  const result = await new Promise<StoredBoard[]>((resolve, reject) => {
-    request.onsuccess = () => resolve((request.result as StoredBoard[]).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)));
+  const result = await new Promise<StoredBoard<TSnapshot>[]>((resolve, reject) => {
+    request.onsuccess = () => resolve((request.result as StoredBoard<TSnapshot>[]).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)));
     request.onerror = () => reject(request.error ?? new Error("Unable to list local boards."));
   });
 

@@ -28,6 +28,7 @@ test("server-renders the complete CanvasRoom workspace", async () => {
   assert.match(html, /Record/);
   assert.match(html, /Board file/);
   assert.match(html, /Open/);
+  assert.match(html, /New lecture/);
   assert.doesNotMatch(html, /codex-preview|react-loading-skeleton|Your site is taking shape/i);
 });
 
@@ -44,15 +45,18 @@ test("ships drawing, device, recording, persistence, and social-preview capabili
 
   assert.match(canvas, /getCoalescedEvents/);
   assert.match(canvas, /onStrokeEvent/);
+  assert.match(canvas, /documentId/);
   assert.match(device, /RTCPeerConnection/);
   assert.match(device, /BroadcastChannel/);
   assert.match(recording, /MediaRecorder/);
   assert.match(recording, /captureStream/);
   assert.match(recording, /previewing/);
   assert.match(recording, /async prepare\(/);
+  assert.match(recording, /drawRecordingToolRail/);
   assert.match(boardFile, /\.canvasroom/);
   assert.match(boardFile, /dataUrl/);
   assert.match(storage, /indexedDB\.open/);
+  assert.match(storage, /listBoards/);
   assert.doesNotMatch(packageJson, /react-loading-skeleton/);
   assert.ok(ogStats.size > 50_000, "social preview should be a real generated image");
 

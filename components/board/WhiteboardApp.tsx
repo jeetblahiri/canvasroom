@@ -15,6 +15,7 @@ import {
   Minus,
   MousePointer2,
   PenTool,
+  Plus,
   Redo2,
   Save,
   Square,
@@ -74,21 +75,23 @@ import {
 import {
   deleteAsset,
   listAssets,
-  loadBoard,
+  listBoards,
   putAsset,
   requestDurableLocalStorage,
   saveBoard,
   type StoredAsset,
+  type StoredBoard,
 } from "../../lib/local-board-store";
 import { createLinkAsset, createStoredAsset } from "../../lib/media-utils";
 
-const BOARD_ID = "canvasroom-home";
+const DEFAULT_BOARD_ID = "canvasroom-home";
 const DEFAULT_TITLE = "Untitled board";
 const COLORS = ["#171b19", "#5470ff", "#ff7655", "#d09c16", "#238261"];
 
 type ActivePanel = "media" | "device" | "record" | "open" | null;
 type SaveState = "loading" | "saving" | "saved" | "error";
 type BoardFileCandidate = { file: File; document: CanvasRoomBoardDocument };
+type BoardTab = Omit<StoredBoard<BoardSnapshot>, "viewport"> & { viewport: BoardViewport };
 
 const IDLE_DEVICE_STATE: DeviceLinkState = {
   role: null,
@@ -145,12 +148,16 @@ export function WhiteboardApp() {
   const stageRef = useRef<HTMLDivElement>(null);
   const importInputRef = useRef<HTMLInputElement>(null);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const assetLoadSequenceRef = useRef(0);
+  const activeBoardCreatedAtRef = useRef(new Date().toISOString());
   const loadedRef = useRef(false);
   const remoteStrokesRef = useRef(new Map<string, BoardStrokeElement>());
   const snapshotRef = useRef<BoardSnapshot>(EMPTY_BOARD_SNAPSHOT);
 
   const [deviceLink] = useState(() => new DeviceLink({ deviceLabel: "CanvasRoom desktop" }));
   const [deviceState, setDeviceState] = useState<DeviceLinkState>(IDLE_DEVICE_STATE);
+  const [activeBoardId, setActiveBoardId] = useState(DEFAULT_BOARD_ID);
+  const [boardTabs, setBoardTabs] = useState<BoardTab[]>([]);
   const [snapshot, setSnapshot] = useState<BoardSnapshot>(EMPTY_BOARD_SNAPSHOT);
   const [viewport, setViewport] = useState<BoardViewport>({ x: 0, y: 0, zoom: 1 });
   const [tool, setTool] = useState<BoardTool>("pen");
@@ -178,17 +185,38 @@ export function WhiteboardApp() {
 
   useEffect(() => {
     let active = true;
-    void Promise.all([loadBoard<BoardSnapshot>(BOARD_ID), listAssets(BOARD_ID), requestDurableLocalStorage()])
-      .then(([storedBoard, storedAssets]) => {
+    void Promise.all([listBoards<BoardSnapshot>(), requestDurableLocalStorage()])
+      .then(async ([storedBoards]) => {
         if (!active) return;
-        if (storedBoard && isBoardSnapshot(storedBoard.snapshot)) {
-          setSnapshot(storedBoard.snapshot);
-          setTitle(storedBoard.title || DEFAULT_TITLE);
-        }
+        const now = new Date().toISOString();
+        const tabs: BoardTab[] = storedBoards
+          .filter((board) => isBoardSnapshot(board.snapshot))
+          .map((board) => ({
+            ...board,
+            title: board.title?.trim() || DEFAULT_TITLE,
+            viewport: board.viewport ?? { x: 0, y: 0, zoom: 1 },
+          }));
+        const initial = tabs[0] ?? {
+          id: DEFAULT_BOARD_ID,
+          title: DEFAULT_TITLE,
+          snapshot: { version: 0, elements: [] },
+          viewport: { x: 0, y: 0, zoom: 1 },
+          createdAt: now,
+          updatedAt: now,
+        } satisfies BoardTab;
+        if (tabs.length === 0) tabs.push(initial);
+        const storedAssets = await listAssets(initial.id);
+        if (!active) return;
+        setBoardTabs(tabs);
+        activeBoardCreatedAtRef.current = initial.createdAt;
+        setActiveBoardId(initial.id);
+        setSnapshot(initial.snapshot);
+        setViewport(initial.viewport);
+        setTitle(initial.title);
         setAssets(storedAssets);
         const arrivingFromInvite = window.location.search.includes("device-link=") || window.location.search.includes("pair=");
         if (arrivingFromInvite) setActivePanel("device");
-        else setShowWelcome(!storedBoard?.snapshot || storedBoard.snapshot.elements.length === 0);
+        else setShowWelcome(initial.snapshot.elements.length === 0);
         loadedRef.current = true;
         setSaveState("saved");
       })
@@ -222,11 +250,20 @@ export function WhiteboardApp() {
     setSaveState("saving");
     saveTimerRef.current = setTimeout(() => {
       const now = new Date().toISOString();
-      void saveBoard<BoardSnapshot>({
-        id: BOARD_ID,
-        title: title.trim() || DEFAULT_TITLE,
+      const savedTitle = title.trim() || DEFAULT_TITLE;
+      setBoardTabs((current) => current.map((tab) => tab.id === activeBoardId ? {
+        ...tab,
+        title: savedTitle,
         snapshot,
-        createdAt: now,
+        viewport,
+        updatedAt: now,
+      } : tab));
+      void saveBoard<BoardSnapshot>({
+        id: activeBoardId,
+        title: savedTitle,
+        snapshot,
+        viewport,
+        createdAt: activeBoardCreatedAtRef.current || now,
         updatedAt: now,
       }).then(() => setSaveState("saved")).catch(() => setSaveState("error"));
     }, 420);
@@ -234,7 +271,7 @@ export function WhiteboardApp() {
     return () => {
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     };
-  }, [snapshot, title]);
+  }, [activeBoardId, snapshot, title, viewport]);
 
   useEffect(() => () => deviceLink.close(), [deviceLink]);
 
@@ -259,13 +296,98 @@ export function WhiteboardApp() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, []);
 
+  const loadAssetsForBoard = useCallback(async (boardId: string) => {
+    const sequence = ++assetLoadSequenceRef.current;
+    setAssets([]);
+    try {
+      const nextAssets = await listAssets(boardId);
+      if (sequence === assetLoadSequenceRef.current) setAssets(nextAssets);
+    } catch (error) {
+      if (sequence === assetLoadSequenceRef.current) {
+        showToast(error instanceof Error ? error.message : "This board's attachments could not be opened.");
+      }
+    }
+  }, [showToast]);
+
+  const persistCurrentBoard = useCallback(() => {
+    const now = new Date().toISOString();
+    return saveBoard<BoardSnapshot>({
+      id: activeBoardId,
+      title: title.trim() || DEFAULT_TITLE,
+      snapshot,
+      viewport,
+      createdAt: activeBoardCreatedAtRef.current || now,
+      updatedAt: now,
+    });
+  }, [activeBoardId, snapshot, title, viewport]);
+
+  const switchBoardTab = useCallback((boardId: string) => {
+    if (boardId === activeBoardId) return;
+    const next = boardTabs.find((tab) => tab.id === boardId);
+    if (!next) return;
+    void persistCurrentBoard().catch(() => setSaveState("error"));
+    const now = new Date().toISOString();
+    setBoardTabs((current) => current.map((tab) => tab.id === activeBoardId ? {
+      ...tab,
+      title: title.trim() || DEFAULT_TITLE,
+      snapshot,
+      viewport,
+      updatedAt: now,
+    } : tab));
+    activeBoardCreatedAtRef.current = next.createdAt;
+    setActiveBoardId(next.id);
+    setTitle(next.title);
+    setSnapshot(next.snapshot);
+    setViewport(next.viewport);
+    setShowWelcome(next.snapshot.elements.length === 0);
+    if (!recording) setActivePanel(null);
+    void loadAssetsForBoard(next.id);
+  }, [activeBoardId, boardTabs, loadAssetsForBoard, persistCurrentBoard, recording, snapshot, title, viewport]);
+
+  const createBoardTab = useCallback(() => {
+    const now = new Date().toISOString();
+    const tab: BoardTab = {
+      id: createId("board"),
+      title: `Lecture ${boardTabs.length + 1}`,
+      snapshot: { version: 0, elements: [] },
+      viewport: { x: 0, y: 0, zoom: 1 },
+      createdAt: now,
+      updatedAt: now,
+    };
+    void persistCurrentBoard().catch(() => setSaveState("error"));
+    setBoardTabs((current) => [
+      ...current.map((item) => item.id === activeBoardId ? {
+        ...item,
+        title: title.trim() || DEFAULT_TITLE,
+        snapshot,
+        viewport,
+        updatedAt: now,
+      } : item),
+      tab,
+    ]);
+    activeBoardCreatedAtRef.current = tab.createdAt;
+    setActiveBoardId(tab.id);
+    setTitle(tab.title);
+    setSnapshot(tab.snapshot);
+    setViewport(tab.viewport);
+    assetLoadSequenceRef.current += 1;
+    setAssets([]);
+    setShowWelcome(true);
+    if (!recording) setActivePanel(null);
+  }, [activeBoardId, boardTabs.length, persistCurrentBoard, recording, snapshot, title, viewport]);
+
   const onCanvasChange = useCallback((next: BoardSnapshot) => {
     setSnapshot(next);
+    setBoardTabs((current) => current.map((tab) => tab.id === activeBoardId ? {
+      ...tab,
+      snapshot: next,
+      updatedAt: new Date().toISOString(),
+    } : tab));
     setShowWelcome(false);
     if (deviceLink.getState().phase === "connected") {
       deviceLink.send({ type: "board:snapshot", revision: next.version, snapshot: next });
     }
-  }, [deviceLink]);
+  }, [activeBoardId, deviceLink]);
 
   const onStrokeEvent = useCallback((event: WhiteboardStrokeEvent) => {
     if (deviceLink.getState().phase !== "connected") return;
@@ -360,20 +482,20 @@ export function WhiteboardApp() {
   const uploadFiles = useCallback(async (files: File[]) => {
     const created: StoredAsset[] = [];
     for (const file of files) {
-      const asset = await createStoredAsset(BOARD_ID, file);
+      const asset = await createStoredAsset(activeBoardId, file);
       await putAsset(asset);
       created.push(asset);
     }
     setAssets((current) => [...created, ...current]);
     showToast(`${created.length} ${created.length === 1 ? "attachment" : "attachments"} added locally.`);
-  }, [showToast]);
+  }, [activeBoardId, showToast]);
 
   const addLink = useCallback(async (url: string) => {
-    const asset = createLinkAsset(BOARD_ID, url);
+    const asset = createLinkAsset(activeBoardId, url);
     await putAsset(asset);
     setAssets((current) => [asset, ...current]);
     showToast("Link added to the media library.");
-  }, [showToast]);
+  }, [activeBoardId, showToast]);
 
   const boardCenter = useCallback(() => {
     const stage = stageRef.current;
@@ -483,7 +605,8 @@ export function WhiteboardApp() {
     setBoardFileBusy(true);
     setBoardFileError(null);
     try {
-      const importedAssets = await restoreCanvasRoomAssets(boardFileCandidate.document.assets, BOARD_ID);
+      const importedAssets = await restoreCanvasRoomAssets(boardFileCandidate.document.assets, activeBoardId);
+      assetLoadSequenceRef.current += 1;
       await Promise.all(importedAssets.map(putAsset));
       const importedIds = new Set(importedAssets.map((asset) => asset.id));
       await Promise.all(assets.filter((asset) => !importedIds.has(asset.id)).map((asset) => deleteAsset(asset.id)));
@@ -500,12 +623,13 @@ export function WhiteboardApp() {
     } finally {
       setBoardFileBusy(false);
     }
-  }, [assets, boardFileBusy, boardFileCandidate, showToast]);
+  }, [activeBoardId, assets, boardFileBusy, boardFileCandidate, showToast]);
 
   const togglePanel = useCallback((panel: Exclude<ActivePanel, null>) => {
+    if (recording) return;
     setShowWelcome(false);
     setActivePanel((current) => current === panel ? null : panel);
-  }, []);
+  }, [recording]);
 
   const getSourceCanvas = useCallback(() => stageRef.current?.querySelector("canvas") ?? null, []);
 
@@ -513,6 +637,15 @@ export function WhiteboardApp() {
     () => boardFileCandidate ? summarizeCanvasRoomDocument(boardFileCandidate.document) : null,
     [boardFileCandidate],
   );
+  const recordingToolRail = useMemo(() => ({
+    activeTool: tool,
+    width: 58,
+    items: [
+      ...tools.map((item) => ({ id: item.id, label: item.label, shortcut: item.key })),
+      { id: "undo", label: "Undo", shortcut: "↶" },
+      { id: "redo", label: "Redo", shortcut: "↷" },
+    ],
+  }), [tool]);
   const toolSettingsVisible = tool === "pen" || tool === "highlighter" || tool === "line" || tool === "rectangle" || tool === "ellipse" || tool === "arrow";
   const saveLabel = saveState === "loading" ? "Opening local board…" : saveState === "saving" ? "Saving locally…" : saveState === "error" ? "Local save needs attention" : "Saved on this device";
   const deviceConnected = deviceState.phase === "connected";
@@ -584,6 +717,33 @@ export function WhiteboardApp() {
         </div>
       </header>
 
+      <nav className="board-tabs" aria-label="Lecture boards">
+        <div className="board-tab-scroll" role="tablist" aria-label="Open lecture boards">
+          {boardTabs.map((tab, index) => {
+            const active = tab.id === activeBoardId;
+            const tabTitle = active ? title.trim() || DEFAULT_TITLE : tab.title;
+            return (
+              <button
+                key={tab.id}
+                aria-controls="active-whiteboard"
+                aria-selected={active}
+                className={`board-tab${active ? " is-active" : ""}`}
+                onClick={() => switchBoardTab(tab.id)}
+                role="tab"
+                type="button"
+              >
+                <span className="board-tab-index">{index + 1}</span>
+                <span className="board-tab-title">{tabTitle}</span>
+                <span className="board-tab-count">{tab.snapshot.elements.length}</span>
+              </button>
+            );
+          })}
+        </div>
+        <button className="board-tab-add" onClick={createBoardTab} type="button" title="Add lecture board" aria-label="Add lecture board">
+          <Plus size={14} /> <span>New lecture</span>
+        </button>
+      </nav>
+
       <div className="workspace">
         <nav className="tool-rail" aria-label="Whiteboard tools">
           <div className="toolbar-group">{toolbar.slice(0, 5)}</div>
@@ -597,6 +757,7 @@ export function WhiteboardApp() {
         </nav>
 
         <section
+          id="active-whiteboard"
           ref={stageRef}
           className={`canvas-stage${draggingFiles ? " is-dragging" : ""}`}
           aria-label="Whiteboard workspace"
@@ -620,6 +781,7 @@ export function WhiteboardApp() {
             strokeWidth={strokeWidth}
             viewport={viewport}
             onViewportChange={setViewport}
+            documentId={activeBoardId}
             onSnapshotChange={onCanvasChange}
             onStrokeEvent={onStrokeEvent}
             onHistoryChange={({ canUndo: undo, canRedo: redo }) => { setCanUndo(undo); setCanRedo(redo); }}
@@ -739,7 +901,7 @@ export function WhiteboardApp() {
           ) : null}
 
           {activePanel === "record" ? (
-            <aside className="side-panel recording-panel-shell" aria-label="Recording controls">
+            <aside className={`side-panel recording-panel-shell${recording ? " is-active" : ""}`} aria-label="Recording controls">
               <div className="panel-heading">
                 <div><span className="eyebrow">Capture this explanation</span><h2>Recording studio</h2></div>
                 <button className="icon-button" onClick={() => setActivePanel(null)} aria-label="Close recording panel"><X size={18} /></button>
@@ -747,9 +909,19 @@ export function WhiteboardApp() {
               <RecordingPanel
                 className="recording-panel-content"
                 getSourceCanvas={getSourceCanvas}
-                onStatusChange={(status) => setRecording(status === "recording" || status === "paused" || status === "preparing" || status === "stopping")}
-                onRecordingSaved={(_result, save) => showToast(`Recording saved as ${save.fileName}.`)}
-                onError={(error) => showToast(error.message)}
+                toolRail={recordingToolRail}
+                onStatusChange={(status) => {
+                  if (status === "recording" || status === "paused" || status === "stopping") setRecording(true);
+                  else if (status !== "idle") setRecording(false);
+                }}
+                onRecordingSaved={(_result, save) => {
+                  setRecording(false);
+                  showToast(`Recording saved as ${save.fileName}.`);
+                }}
+                onError={(error) => {
+                  setRecording(false);
+                  showToast(error.message);
+                }}
               />
             </aside>
           ) : null}

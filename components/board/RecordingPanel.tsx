@@ -29,6 +29,7 @@ import {
   type RecordingResult,
   type RecordingSaveResult,
   type RecordingStatus,
+  type RecordingToolRailOptions,
   type WebcamPosition,
   type WebcamShape,
   type WebcamSize,
@@ -42,6 +43,7 @@ export interface RecordingPanelProps {
   className?: string;
   defaultMicrophoneEnabled?: boolean;
   defaultCameraEnabled?: boolean;
+  toolRail?: RecordingToolRailOptions;
   onStatusChange?: (status: RecordingStatus) => void;
   onRecordingSaved?: (
     recording: RecordingResult,
@@ -208,6 +210,7 @@ export function RecordingPanel({
   className,
   defaultMicrophoneEnabled = true,
   defaultCameraEnabled = true,
+  toolRail,
   onStatusChange,
   onRecordingSaved,
   onError,
@@ -332,6 +335,7 @@ export function RecordingPanel({
         size: webcamSize,
         mirror: true,
       },
+      toolRail,
     }),
     [
       cameraEnabled,
@@ -339,6 +343,7 @@ export function RecordingPanel({
       getSourceCanvas,
       microphoneEnabled,
       sourceCanvas,
+      toolRail,
       webcamPosition,
       webcamShape,
       webcamSize,
@@ -348,6 +353,10 @@ export function RecordingPanel({
   useEffect(() => {
     recorderRef.current?.updateWebcamOverlay(recordingOptions.webcam);
   }, [recordingOptions.webcam]);
+
+  useEffect(() => {
+    recorderRef.current?.updateToolRail(toolRail);
+  }, [toolRail]);
 
   const preparePreview = useCallback(async () => {
     const recorder = recorderRef.current;
@@ -436,7 +445,7 @@ export function RecordingPanel({
 
   const hasDirectCanvas = Boolean(sourceCanvas || getSourceCanvas);
   const sourceDescription = hasDirectCanvas
-    ? "Captures the whiteboard directly"
+    ? "Captures the visible board and pen column"
     : "Choose a tab, window, or screen when recording starts";
 
   const statusColor =
@@ -455,6 +464,92 @@ export function RecordingPanel({
     ],
     [],
   );
+
+  if (active || status === "stopping" || saving) {
+    return (
+      <section
+        aria-label="Active recording controls"
+        className={className}
+        style={{
+          alignItems: "center",
+          background: "rgba(17, 21, 19, 0.96)",
+          border: "1px solid rgba(255,255,255,0.14)",
+          borderRadius: 14,
+          boxShadow: "0 14px 38px rgba(17,21,19,0.3)",
+          color: "#fff",
+          display: "flex",
+          gap: 10,
+          maxWidth: "none",
+          padding: "7px 8px 7px 11px",
+          width: "max-content",
+        }}
+      >
+        <span
+          aria-hidden="true"
+          style={{
+            background: status === "paused" ? "#dfa13e" : "#ff7655",
+            borderRadius: "50%",
+            boxShadow: status === "recording" ? "0 0 0 4px rgba(255,118,85,0.16)" : "none",
+            height: 8,
+            width: 8,
+          }}
+        />
+        <span
+          aria-live="polite"
+          style={{
+            minWidth: 58,
+            fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+            fontSize: 13,
+            fontVariantNumeric: "tabular-nums",
+            fontWeight: 750,
+          }}
+        >
+          {formatElapsed(elapsedMs)}
+        </span>
+        {active ? (
+          <>
+            <button
+              aria-label={status === "paused" ? "Resume recording" : "Pause recording"}
+              onClick={togglePause}
+              style={{
+                ...controlStyle,
+                background: "rgba(255,255,255,0.09)",
+                borderColor: "rgba(255,255,255,0.12)",
+                color: "#fff",
+                cursor: "pointer",
+                minHeight: 34,
+                padding: "6px 9px",
+              }}
+              type="button"
+            >
+              <Icon name={status === "paused" ? "play" : "pause"} />
+            </button>
+            <button
+              onClick={() => void stopAndSave()}
+              style={{
+                ...controlStyle,
+                background: "#ff7655",
+                borderColor: "#ff7655",
+                color: "#111513",
+                cursor: "pointer",
+                fontSize: 11,
+                fontWeight: 800,
+                minHeight: 34,
+                padding: "6px 10px",
+              }}
+              type="button"
+            >
+              <Icon name="stop" /> Stop
+            </button>
+          </>
+        ) : (
+          <span style={{ color: "#c5ccc8", fontSize: 10, padding: "0 7px" }}>
+            {saving ? "Saving recording…" : "Finishing…"}
+          </span>
+        )}
+      </section>
+    );
+  }
 
   return (
     <section
@@ -508,8 +603,7 @@ export function RecordingPanel({
             style={{
               background: statusColor,
               borderRadius: "50%",
-              boxShadow:
-                status === "recording" ? `0 0 0 3px ${statusColor}26` : "none",
+              boxShadow: previewing ? `0 0 0 3px ${statusColor}26` : "none",
               height: 7,
               width: 7,
             }}
@@ -574,7 +668,7 @@ export function RecordingPanel({
             </span>
             <strong style={{ fontSize: 12 }}>Preview before you record</strong>
             <span style={{ color: "#9ea7a2", fontSize: 10, lineHeight: 1.4 }}>
-              Check the exact board area and your camera placement first.
+              Check the visible board, pen column, and your camera placement first.
             </span>
           </div>
         ) : null}
@@ -643,7 +737,7 @@ export function RecordingPanel({
           <div style={{ alignItems: "center", display: "flex", gap: 9 }}>
             <span
               style={{
-                background: status === "paused" ? "#dfa13e" : "#e2543e",
+                background: "#e2543e",
                 borderRadius: "50%",
                 height: 9,
                 width: 9,

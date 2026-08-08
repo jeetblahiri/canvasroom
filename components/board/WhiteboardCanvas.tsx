@@ -67,6 +67,8 @@ export interface WhiteboardCanvasHandle {
 }
 
 export interface WhiteboardCanvasProps {
+  /** Stable document identity used to isolate undo/redo history between tabs. */
+  documentId?: string;
   /** Supply this to make board contents controlled. */
   snapshot?: BoardSnapshot;
   initialSnapshot?: BoardSnapshot;
@@ -362,6 +364,7 @@ function drawSelection(
 export const WhiteboardCanvas = forwardRef<WhiteboardCanvasHandle, WhiteboardCanvasProps>(
   function WhiteboardCanvas(
     {
+      documentId,
       snapshot,
       initialSnapshot = EMPTY_BOARD_SNAPSHOT,
       onSnapshotChange,
@@ -396,6 +399,7 @@ export const WhiteboardCanvas = forwardRef<WhiteboardCanvasHandle, WhiteboardCan
     const [, setInternalVersion] = useState(currentSnapshotRef.current.version);
     const undoRef = useRef<BoardSnapshot[]>([]);
     const redoRef = useRef<BoardSnapshot[]>([]);
+    const documentIdRef = useRef(documentId);
     const viewportRef = useRef<BoardViewport>({ ...(viewport ?? initialViewport) });
     const [viewportState, setViewportState] = useState<BoardViewport>(viewportRef.current);
     const selectionRef = useRef<string[]>(selectedElementIds ?? EMPTY_SELECTION);
@@ -678,6 +682,24 @@ export const WhiteboardCanvas = forwardRef<WhiteboardCanvasHandle, WhiteboardCan
     }, [backgroundColor, drawImageEntity, getCachedImage, gridSize, showGrid]);
 
     drawSceneRef.current = drawScene;
+
+    useEffect(() => {
+      if (documentIdRef.current === documentId) return;
+      documentIdRef.current = documentId;
+      undoRef.current = [];
+      redoRef.current = [];
+      interactionRef.current = null;
+      previewElementRef.current = null;
+      previewElementsRef.current = null;
+      activePenPointersRef.current.clear();
+      touchPointsRef.current.clear();
+      ignoredTouchPointersRef.current.clear();
+      pinchRef.current = null;
+      setTextEditor(null);
+      updateSelection([]);
+      reportHistory();
+      scheduleRender();
+    }, [documentId, reportHistory, scheduleRender, updateSelection]);
 
     useEffect(() => {
       if (!snapshot) return;
