@@ -11,6 +11,7 @@ import {
 import {
   Camera,
   Circle as CircleIcon,
+  Eye,
   Mic,
   Pause,
   Play,
@@ -105,6 +106,8 @@ function statusLabel(status: RecordingStatus, saving: boolean): string {
       return "Preparing";
     case "recording":
       return "Recording";
+    case "previewing":
+      return "Preview ready";
     case "paused":
       return "Paused";
     case "stopping":
@@ -120,7 +123,7 @@ function Icon({
   name,
   size = 16,
 }: {
-  name: "record" | "pause" | "play" | "stop" | "mic" | "camera" | "save";
+  name: "record" | "pause" | "play" | "stop" | "mic" | "camera" | "save" | "preview";
   size?: number;
 }) {
   const icons: Record<typeof name, LucideIcon> = {
@@ -128,6 +131,7 @@ function Icon({
     mic: Mic,
     pause: Pause,
     play: Play,
+    preview: Eye,
     record: CircleIcon,
     save: Save,
     stop: SquareIcon,
@@ -209,6 +213,7 @@ export function RecordingPanel({
   onError,
 }: RecordingPanelProps) {
   const recorderRef = useRef<WhiteboardRecorder | null>(null);
+  const previewVideoRef = useRef<HTMLVideoElement | null>(null);
   const mountedRef = useRef(false);
   const callbackRef = useRef({ onStatusChange, onRecordingSaved, onError });
 
@@ -227,6 +232,7 @@ export function RecordingPanel({
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [supported, setSupported] = useState(true);
+  const [previewStream, setPreviewStream] = useState<MediaStream | null>(null);
 
   useEffect(() => {
     callbackRef.current = { onStatusChange, onRecordingSaved, onError };
@@ -263,6 +269,7 @@ export function RecordingPanel({
     const recorder = new WhiteboardRecorder({
       onStatusChange: (nextStatus) => {
         if (mountedRef.current) setStatus(nextStatus);
+        if (mountedRef.current && nextStatus === "idle") setPreviewStream(null);
         callbackRef.current.onStatusChange?.(nextStatus);
       },
       onError: (error) => {
@@ -282,6 +289,16 @@ export function RecordingPanel({
   }, []);
 
   useEffect(() => {
+    const video = previewVideoRef.current;
+    if (!video) return;
+    video.srcObject = previewStream;
+    if (previewStream) void video.play().catch(() => undefined);
+    return () => {
+      if (video.srcObject === previewStream) video.srcObject = null;
+    };
+  }, [previewStream]);
+
+  useEffect(() => {
     if (status !== "recording" && status !== "paused") {
       return;
     }
@@ -295,7 +312,57 @@ export function RecordingPanel({
   const busy =
     saving || status === "preparing" || status === "stopping";
   const active = status === "recording" || status === "paused";
-  const settingsDisabled = busy || active;
+  const previewing = status === "previewing";
+  const sourceSettingsDisabled = busy || active || previewing;
+  const appearanceSettingsDisabled = busy || active;
+
+  const recordingOptions = useMemo(
+    () => ({
+      sourceCanvas: sourceCanvas ?? getSourceCanvas?.() ?? null,
+      includeMicrophone: microphoneEnabled,
+      includeCamera: cameraEnabled,
+      includeDisplayAudio: displayAudioEnabled,
+      frameRate: 30,
+      maxWidth: 1920,
+      maxHeight: 1080,
+      videoBitsPerSecond: 6_000_000,
+      webcam: {
+        shape: webcamShape,
+        position: webcamPosition,
+        size: webcamSize,
+        mirror: true,
+      },
+    }),
+    [
+      cameraEnabled,
+      displayAudioEnabled,
+      getSourceCanvas,
+      microphoneEnabled,
+      sourceCanvas,
+      webcamPosition,
+      webcamShape,
+      webcamSize,
+    ],
+  );
+
+  useEffect(() => {
+    recorderRef.current?.updateWebcamOverlay(recordingOptions.webcam);
+  }, [recordingOptions.webcam]);
+
+  const preparePreview = useCallback(async () => {
+    const recorder = recorderRef.current;
+    if (!recorder) return;
+    setErrorMessage(null);
+    setSaveMessage(null);
+    setElapsedMs(0);
+    try {
+      const preview = await recorder.prepare(recordingOptions);
+      if (mountedRef.current) setPreviewStream(preview.stream);
+    } catch (error) {
+      const value = error instanceof Error ? error : new Error(String(error));
+      if (mountedRef.current) setErrorMessage(humanizeRecordingError(value));
+    }
+  }, [recordingOptions]);
 
   const start = useCallback(async () => {
     const recorder = recorderRef.current;
@@ -305,38 +372,20 @@ export function RecordingPanel({
     setSaveMessage(null);
     setElapsedMs(0);
     try {
-      await recorder.start({
-        sourceCanvas: sourceCanvas ?? getSourceCanvas?.() ?? null,
-        includeMicrophone: microphoneEnabled,
-        includeCamera: cameraEnabled,
-        includeDisplayAudio: displayAudioEnabled,
-        frameRate: 30,
-        maxWidth: 1920,
-        maxHeight: 1080,
-        videoBitsPerSecond: 6_000_000,
-        webcam: {
-          shape: webcamShape,
-          position: webcamPosition,
-          size: webcamSize,
-          mirror: true,
-        },
-      });
+      await recorder.start(recordingOptions);
     } catch (error) {
       // The recorder callback already reports most setup errors, but this also
       // covers misuse errors thrown before the browser capture flow starts.
       const value = error instanceof Error ? error : new Error(String(error));
       setErrorMessage(humanizeRecordingError(value));
     }
-  }, [
-    cameraEnabled,
-    displayAudioEnabled,
-    getSourceCanvas,
-    microphoneEnabled,
-    sourceCanvas,
-    webcamPosition,
-    webcamShape,
-    webcamSize,
-  ]);
+  }, [recordingOptions]);
+
+  const resetPreview = useCallback(() => {
+    recorderRef.current?.cancelPreview();
+    setPreviewStream(null);
+    setErrorMessage(null);
+  }, []);
 
   const stopAndSave = useCallback(async () => {
     const recorder = recorderRef.current;
@@ -469,6 +518,115 @@ export function RecordingPanel({
         </div>
       </header>
 
+      <div
+        aria-label="Recording preview"
+        style={{
+          aspectRatio: "16 / 9",
+          background: "#1d211f",
+          border: "1px solid #d7d3ca",
+          borderRadius: 12,
+          boxShadow: "inset 0 0 0 1px rgba(255,255,255,0.04)",
+          marginBottom: 12,
+          overflow: "hidden",
+          position: "relative",
+        }}
+      >
+        <video
+          aria-label="Exact board and camera composition"
+          autoPlay
+          muted
+          playsInline
+          ref={previewVideoRef}
+          style={{
+            display: previewStream ? "block" : "none",
+            height: "100%",
+            objectFit: "contain",
+            width: "100%",
+          }}
+        />
+        {!previewStream ? (
+          <div
+            style={{
+              alignItems: "center",
+              color: "#d9dedb",
+              display: "flex",
+              flexDirection: "column",
+              gap: 7,
+              inset: 0,
+              justifyContent: "center",
+              padding: 20,
+              position: "absolute",
+              textAlign: "center",
+            }}
+          >
+            <span
+              style={{
+                alignItems: "center",
+                background: "rgba(255,255,255,0.09)",
+                borderRadius: 10,
+                display: "flex",
+                height: 36,
+                justifyContent: "center",
+                width: 36,
+              }}
+            >
+              <Icon name="preview" />
+            </span>
+            <strong style={{ fontSize: 12 }}>Preview before you record</strong>
+            <span style={{ color: "#9ea7a2", fontSize: 10, lineHeight: 1.4 }}>
+              Check the exact board area and your camera placement first.
+            </span>
+          </div>
+        ) : null}
+        <span
+          style={{
+            background: "rgba(17,21,19,0.78)",
+            borderRadius: 999,
+            bottom: 8,
+            color: "#f7f7f2",
+            fontSize: 9,
+            fontWeight: 700,
+            left: 8,
+            letterSpacing: "0.04em",
+            padding: "5px 7px",
+            position: "absolute",
+            textTransform: "uppercase",
+          }}
+        >
+          Exact recorded area
+        </span>
+      </div>
+
+      {previewing ? (
+        <div
+          style={{
+            alignItems: "center",
+            color: "#626a65",
+            display: "flex",
+            fontSize: 10,
+            justifyContent: "space-between",
+            margin: "-4px 2px 10px",
+          }}
+        >
+          <span>Camera and board are ready.</span>
+          <button
+            onClick={resetPreview}
+            style={{
+              background: "transparent",
+              border: 0,
+              color: "#4d60c9",
+              cursor: "pointer",
+              fontSize: 10,
+              fontWeight: 700,
+              padding: 3,
+            }}
+            type="button"
+          >
+            Change setup
+          </button>
+        </div>
+      ) : null}
+
       {active || busy ? (
         <div
           style={{
@@ -510,7 +668,7 @@ export function RecordingPanel({
       <div style={{ display: "grid", gap: 8 }}>
         <ToggleRow
           checked={microphoneEnabled}
-          disabled={settingsDisabled}
+          disabled={sourceSettingsDisabled}
           icon="mic"
           label="Microphone"
           onChange={setMicrophoneEnabled}
@@ -518,7 +676,7 @@ export function RecordingPanel({
         />
         <ToggleRow
           checked={cameraEnabled}
-          disabled={settingsDisabled}
+          disabled={sourceSettingsDisabled}
           icon="camera"
           label="Camera overlay"
           onChange={setCameraEnabled}
@@ -530,17 +688,17 @@ export function RecordingPanel({
             style={{
               alignItems: "center",
               color: "#6e6b63",
-              cursor: settingsDisabled ? "not-allowed" : "pointer",
+              cursor: sourceSettingsDisabled ? "not-allowed" : "pointer",
               display: "flex",
               fontSize: 12,
               gap: 8,
-              opacity: settingsDisabled ? 0.58 : 1,
+              opacity: sourceSettingsDisabled ? 0.58 : 1,
               padding: "2px 3px",
             }}
           >
             <input
               checked={displayAudioEnabled}
-              disabled={settingsDisabled}
+              disabled={sourceSettingsDisabled}
               onChange={(event) => setDisplayAudioEnabled(event.target.checked)}
               style={{ accentColor: "#d94c37" }}
               type="checkbox"
@@ -576,7 +734,7 @@ export function RecordingPanel({
               return (
                 <button
                   aria-pressed={selected}
-                  disabled={settingsDisabled}
+                  disabled={appearanceSettingsDisabled}
                   key={option.value}
                   onClick={() => setWebcamShape(option.value)}
                   style={{
@@ -587,7 +745,7 @@ export function RecordingPanel({
                       : "none",
                     color: selected ? "#24231e" : "#747169",
                     flex: 1,
-                    opacity: settingsDisabled ? 0.55 : 1,
+                    opacity: appearanceSettingsDisabled ? 0.55 : 1,
                   }}
                   type="button"
                 >
@@ -613,14 +771,14 @@ export function RecordingPanel({
             <label style={{ display: "grid", gap: 5 }}>
               <span style={labelStyle}>Corner</span>
               <select
-                disabled={settingsDisabled}
+                disabled={appearanceSettingsDisabled}
                 onChange={(event) =>
                   setWebcamPosition(event.target.value as WebcamPosition)
                 }
                 style={{
                   ...controlStyle,
                   appearance: "auto",
-                  opacity: settingsDisabled ? 0.55 : 1,
+                  opacity: appearanceSettingsDisabled ? 0.55 : 1,
                   width: "100%",
                 }}
                 value={webcamPosition}
@@ -634,12 +792,12 @@ export function RecordingPanel({
             <label style={{ display: "grid", gap: 5 }}>
               <span style={labelStyle}>Size</span>
               <select
-                disabled={settingsDisabled}
+                disabled={appearanceSettingsDisabled}
                 onChange={(event) => setWebcamSize(event.target.value as WebcamSize)}
                 style={{
                   ...controlStyle,
                   appearance: "auto",
-                  opacity: settingsDisabled ? 0.55 : 1,
+                  opacity: appearanceSettingsDisabled ? 0.55 : 1,
                   width: "100%",
                 }}
                 value={webcamSize}
@@ -699,7 +857,7 @@ export function RecordingPanel({
         {!active ? (
           <button
             disabled={!supported || busy}
-            onClick={() => void start()}
+            onClick={() => void (previewing ? start() : preparePreview())}
             style={{
               alignItems: "center",
               background: busy ? "#e4b1a8" : "#d94c37",
@@ -719,8 +877,14 @@ export function RecordingPanel({
             }}
             type="button"
           >
-            <Icon name="record" />
-            {saving ? "Saving…" : status === "preparing" ? "Preparing…" : "Start recording"}
+            <Icon name={previewing ? "record" : "preview"} />
+            {saving
+              ? "Saving…"
+              : status === "preparing"
+                ? "Preparing preview…"
+                : previewing
+                  ? "Start recording"
+                  : "Preview setup"}
           </button>
         ) : (
           <>
@@ -772,7 +936,7 @@ export function RecordingPanel({
           textAlign: "center",
         }}
       >
-        Your browser asks before using the screen, camera, or microphone.
+        Preview grants camera and microphone access, but recording starts only after you confirm.
       </p>
     </section>
   );

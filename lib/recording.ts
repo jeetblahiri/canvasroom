@@ -10,6 +10,7 @@
 export type RecordingStatus =
   | "idle"
   | "preparing"
+  | "previewing"
   | "recording"
   | "paused"
   | "stopping"
@@ -54,6 +55,13 @@ export interface RecordingResult {
   mimeType: string;
   durationMs: number;
   suggestedFileName: string;
+}
+
+export interface RecordingPreview {
+  /** The exact composited stream that will be passed to MediaRecorder. */
+  stream: MediaStream;
+  width: number;
+  height: number;
 }
 
 export interface RecordingCallbacks {
@@ -422,6 +430,15 @@ export class WhiteboardRecorder {
     return Math.max(0, end - this.startedAt - this.totalPausedMs);
   }
 
+  getPreviewStream(): MediaStream | null {
+    return this.outputStream;
+  }
+
+  updateWebcamOverlay(webcam: Partial<WebcamOverlayOptions>): void {
+    this.overlay = { ...this.overlay, ...webcam };
+    if (this.status === "previewing") this.drawFrame();
+  }
+
   private setStatus(status: RecordingStatus): void {
     this.status = status;
     this.callbacks.onStatusChange?.(status);
@@ -434,7 +451,7 @@ export class WhiteboardRecorder {
     return value;
   }
 
-  async start(options: RecordingStartOptions = {}): Promise<void> {
+  async prepare(options: RecordingStartOptions = {}): Promise<RecordingPreview> {
     if (["preparing", "recording", "paused", "stopping"].includes(this.status)) {
       throw new Error("A recording is already active.");
     }
@@ -461,15 +478,55 @@ export class WhiteboardRecorder {
       this.prepareCompositor(options);
       await this.prepareAudioMix(options.includeDisplayAudio ?? false);
       this.startCompositorLoop();
-      this.createMediaRecorder(options.videoBitsPerSecond);
+      if (!this.outputStream || !this.compositorCanvas) {
+        throw new Error("The recording preview could not be created.");
+      }
+      this.setStatus("previewing");
+      return {
+        stream: this.outputStream,
+        width: this.compositorCanvas.width,
+        height: this.compositorCanvas.height,
+      };
+    } catch (error) {
+      this.releaseResources();
+      throw this.reportError(error);
+    }
+  }
 
+  async start(options: RecordingStartOptions = {}): Promise<void> {
+    if (["preparing", "recording", "paused", "stopping"].includes(this.status)) {
+      throw new Error("A recording is already active.");
+    }
+
+    if (this.status !== "previewing") {
+      await this.prepare(options);
+    } else {
+      this.overlay = { ...this.overlay, ...options.webcam };
+    }
+
+    try {
+      this.mimeType = selectRecordingMimeType(options.preferredMimeTypes);
+      this.createMediaRecorder(options.videoBitsPerSecond);
       this.startedAt = now();
+      this.pausedAt = 0;
+      this.totalPausedMs = 0;
+      this.chunks = [];
       this.mediaRecorder?.start(1_000);
       this.setStatus("recording");
     } catch (error) {
       this.releaseResources();
       throw this.reportError(error);
     }
+  }
+
+  cancelPreview(): void {
+    if (this.status !== "previewing" && this.status !== "error") return;
+    this.releaseResources();
+    this.chunks = [];
+    this.startedAt = 0;
+    this.pausedAt = 0;
+    this.totalPausedMs = 0;
+    this.setStatus("idle");
   }
 
   private async acquireBoardSource(options: RecordingStartOptions): Promise<void> {
@@ -508,6 +565,10 @@ export class WhiteboardRecorder {
     this.sourceVideo = createMutedVideo(this.sourceStream);
     await waitForVideo(this.sourceVideo);
     this.sourceEndedHandler = () => {
+      if (this.status === "previewing") {
+        this.cancelPreview();
+        return;
+      }
       if (this.status !== "recording" && this.status !== "paused") return;
       void this.stop()
         .then((result) => this.callbacks.onSourceEnded?.(result))

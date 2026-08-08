@@ -26,14 +26,17 @@ test("server-renders the complete CanvasRoom workspace", async () => {
   assert.match(html, /Connect/);
   assert.match(html, /Media/);
   assert.match(html, /Record/);
+  assert.match(html, /Board file/);
+  assert.match(html, /Open/);
   assert.doesNotMatch(html, /codex-preview|react-loading-skeleton|Your site is taking shape/i);
 });
 
 test("ships drawing, device, recording, persistence, and social-preview capabilities", async () => {
-  const [canvas, device, recording, storage, packageJson, ogStats] = await Promise.all([
+  const [canvas, device, recording, boardFile, storage, packageJson, ogStats] = await Promise.all([
     readFile(new URL("../components/board/WhiteboardCanvas.tsx", import.meta.url), "utf8"),
     readFile(new URL("../lib/device-link.ts", import.meta.url), "utf8"),
     readFile(new URL("../lib/recording.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/board-file.ts", import.meta.url), "utf8"),
     readFile(new URL("../lib/local-board-store.ts", import.meta.url), "utf8"),
     readFile(new URL("../package.json", import.meta.url), "utf8"),
     stat(new URL("../public/og.png", import.meta.url)),
@@ -45,6 +48,10 @@ test("ships drawing, device, recording, persistence, and social-preview capabili
   assert.match(device, /BroadcastChannel/);
   assert.match(recording, /MediaRecorder/);
   assert.match(recording, /captureStream/);
+  assert.match(recording, /previewing/);
+  assert.match(recording, /async prepare\(/);
+  assert.match(boardFile, /\.canvasroom/);
+  assert.match(boardFile, /dataUrl/);
   assert.match(storage, /indexedDB\.open/);
   assert.doesNotMatch(packageJson, /react-loading-skeleton/);
   assert.ok(ogStats.size > 50_000, "social preview should be a real generated image");

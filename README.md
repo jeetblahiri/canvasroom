@@ -7,9 +7,9 @@ CanvasRoom is a local-first connected whiteboard built for natural Pencil input,
 - Pressure-sensitive freehand drawing with coalesced Pointer Events
 - Shapes, text, selection, erasing, undo/redo, pan, and zoom
 - Image, video, audio, PDF, file, and link attachments
-- IndexedDB autosave plus portable board and PNG exports
+- IndexedDB autosave plus attachment-aware `.canvasroom` board documents and PNG exports
 - WebRTC iPad/peer linking with live stroke messages and BroadcastChannel fallback
-- Canvas recording with mic, circular or square camera overlay, pause/resume, and local-file download
+- Preflight recording preview with the exact board area, mic, circular or square camera overlay, pause/resume, and local-file download
 - Installable offline-capable PWA shell
 
 ## Local development

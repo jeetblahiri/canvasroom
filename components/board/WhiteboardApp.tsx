@@ -5,6 +5,8 @@ import {
   Circle,
   Download,
   Eraser,
+  FileCheck2,
+  FolderOpen,
   Hand,
   Highlighter,
   Image as ImageIcon,
@@ -60,12 +62,20 @@ import {
   type DeviceLinkState,
 } from "../../lib/device-link";
 import {
+  CANVASROOM_BOARD_ACCEPT,
+  createCanvasRoomDocument,
+  createCanvasRoomFileName,
+  readCanvasRoomFile,
+  restoreCanvasRoomAssets,
+  saveCanvasRoomDocument,
+  summarizeCanvasRoomDocument,
+  type CanvasRoomBoardDocument,
+} from "../../lib/board-file";
+import {
   deleteAsset,
-  downloadJsonFile,
   listAssets,
   loadBoard,
   putAsset,
-  readJsonFile,
   requestDurableLocalStorage,
   saveBoard,
   type StoredAsset,
@@ -76,8 +86,9 @@ const BOARD_ID = "canvasroom-home";
 const DEFAULT_TITLE = "Untitled board";
 const COLORS = ["#171b19", "#5470ff", "#ff7655", "#d09c16", "#238261"];
 
-type ActivePanel = "media" | "device" | "record" | null;
+type ActivePanel = "media" | "device" | "record" | "open" | null;
 type SaveState = "loading" | "saving" | "saved" | "error";
+type BoardFileCandidate = { file: File; document: CanvasRoomBoardDocument };
 
 const IDLE_DEVICE_STATE: DeviceLinkState = {
   role: null,
@@ -124,6 +135,11 @@ function isTypingTarget(target: EventTarget | null) {
   return target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement;
 }
 
+function formatBoardDate(value: string) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "Legacy board" : date.toLocaleString();
+}
+
 export function WhiteboardApp() {
   const canvasRef = useRef<WhiteboardCanvasHandle>(null);
   const stageRef = useRef<HTMLDivElement>(null);
@@ -151,6 +167,9 @@ export function WhiteboardApp() {
   const [canUndo, setCanUndo] = useState(false);
   const [canRedo, setCanRedo] = useState(false);
   const [recording, setRecording] = useState(false);
+  const [boardFileCandidate, setBoardFileCandidate] = useState<BoardFileCandidate | null>(null);
+  const [boardFileBusy, setBoardFileBusy] = useState(false);
+  const [boardFileError, setBoardFileError] = useState<string | null>(null);
 
   const showToast = useCallback((message: string) => {
     setToast(message);
@@ -424,33 +443,64 @@ export function WhiteboardApp() {
     showToast("Board image exported.");
   }, [showToast, title]);
 
-  const exportBoard = useCallback(() => {
-    const portableAssets = assets.map((asset) => {
-      const portable: Omit<StoredAsset, "blob"> & { blob?: never } = { ...asset, blob: undefined };
-      delete portable.blob;
-      return portable;
-    });
-    downloadJsonFile({
-      format: "canvasroom-board",
-      schemaVersion: 1,
-      board: { id: BOARD_ID, title, snapshot },
-      assets: portableAssets,
-      exportedAt: new Date().toISOString(),
-    }, `${(title.trim() || "canvasroom-board").replace(/[^a-z0-9]+/gi, "-").toLowerCase()}.canvasroom.json`);
-    showToast("Portable board file saved.");
-  }, [assets, showToast, snapshot, title]);
-
-  const importBoard = useCallback(async (file: File) => {
-    type PortableBoard = { format?: string; board?: { title?: string; snapshot?: unknown } };
-    const imported = await readJsonFile<PortableBoard>(file);
-    if (imported.format !== "canvasroom-board" || !isBoardSnapshot(imported.board?.snapshot)) {
-      throw new Error("That file is not a CanvasRoom board.");
+  const exportBoard = useCallback(async () => {
+    if (boardFileBusy) return;
+    setBoardFileBusy(true);
+    setBoardFileError(null);
+    try {
+      const document = await createCanvasRoomDocument({ title, snapshot, viewport, assets });
+      const result = await saveCanvasRoomDocument(document, createCanvasRoomFileName(title));
+      if (result === "cancelled") {
+        showToast("Board export cancelled.");
+      } else {
+        showToast(`CanvasRoom board saved with ${assets.length} ${assets.length === 1 ? "attachment" : "attachments"}.`);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "The board file could not be saved.";
+      setBoardFileError(message);
+      showToast(message);
+    } finally {
+      setBoardFileBusy(false);
     }
-    setTitle(imported.board?.title?.trim() || DEFAULT_TITLE);
-    setSnapshot(imported.board.snapshot);
-    setShowWelcome(false);
-    showToast("Board imported and saved locally.");
-  }, [showToast]);
+  }, [assets, boardFileBusy, showToast, snapshot, title, viewport]);
+
+  const inspectBoardFile = useCallback(async (file: File) => {
+    setBoardFileBusy(true);
+    setBoardFileError(null);
+    setBoardFileCandidate(null);
+    try {
+      const document = await readCanvasRoomFile(file);
+      setBoardFileCandidate({ file, document });
+    } catch (error) {
+      setBoardFileError(error instanceof Error ? error.message : "That board file could not be read.");
+    } finally {
+      setBoardFileBusy(false);
+    }
+  }, []);
+
+  const openBoardCandidate = useCallback(async () => {
+    if (!boardFileCandidate || boardFileBusy) return;
+    setBoardFileBusy(true);
+    setBoardFileError(null);
+    try {
+      const importedAssets = await restoreCanvasRoomAssets(boardFileCandidate.document.assets, BOARD_ID);
+      await Promise.all(importedAssets.map(putAsset));
+      const importedIds = new Set(importedAssets.map((asset) => asset.id));
+      await Promise.all(assets.filter((asset) => !importedIds.has(asset.id)).map((asset) => deleteAsset(asset.id)));
+      setAssets(importedAssets);
+      setTitle(boardFileCandidate.document.board.title || DEFAULT_TITLE);
+      setSnapshot(boardFileCandidate.document.board.snapshot);
+      setViewport(boardFileCandidate.document.board.viewport);
+      setShowWelcome(false);
+      setActivePanel(null);
+      setBoardFileCandidate(null);
+      showToast(`Opened ${boardFileCandidate.file.name}.`);
+    } catch (error) {
+      setBoardFileError(error instanceof Error ? error.message : "That board could not be opened.");
+    } finally {
+      setBoardFileBusy(false);
+    }
+  }, [assets, boardFileBusy, boardFileCandidate, showToast]);
 
   const togglePanel = useCallback((panel: Exclude<ActivePanel, null>) => {
     setShowWelcome(false);
@@ -459,6 +509,10 @@ export function WhiteboardApp() {
 
   const getSourceCanvas = useCallback(() => stageRef.current?.querySelector("canvas") ?? null, []);
 
+  const boardFileSummary = useMemo(
+    () => boardFileCandidate ? summarizeCanvasRoomDocument(boardFileCandidate.document) : null,
+    [boardFileCandidate],
+  );
   const toolSettingsVisible = tool === "pen" || tool === "highlighter" || tool === "line" || tool === "rectangle" || tool === "ellipse" || tool === "arrow";
   const saveLabel = saveState === "loading" ? "Opening local board…" : saveState === "saving" ? "Saving locally…" : saveState === "error" ? "Local save needs attention" : "Saved on this device";
   const deviceConnected = deviceState.phase === "connected";
@@ -518,14 +572,14 @@ export function WhiteboardApp() {
           <button className={`${panelButtonClass("record", activePanel)} record-button${recording ? " is-recording" : ""}`} onClick={() => togglePanel("record")}>
             <span className="record-dot" /><span className="button-label">{recording ? "Recording" : "Record"}</span>
           </button>
-          <button className="topbar-button" onClick={exportBoard} title="Save portable board file">
-            <Save size={15} /><span className="button-label">Save file</span>
+          <button className="topbar-button" disabled={boardFileBusy} onClick={() => void exportBoard()} title="Export a complete CanvasRoom board file">
+            <Save size={15} /><span className="button-label">Board file</span>
           </button>
-          <button className="topbar-button" onClick={() => importInputRef.current?.click()} title="Open a portable CanvasRoom board">
-            <Upload size={15} /><span className="button-label">Open</span>
+          <button className={panelButtonClass("open", activePanel)} onClick={() => togglePanel("open")} title="Open a CanvasRoom board">
+            <FolderOpen size={15} /><span className="button-label">Open</span>
           </button>
           <button className="topbar-button" onClick={exportPng} title="Export current view as PNG">
-            <Download size={15} /><span className="button-label">Export</span>
+            <Download size={15} /><span className="button-label">PNG</span>
           </button>
         </div>
       </header>
@@ -609,6 +663,60 @@ export function WhiteboardApp() {
             </div>
           </div>
 
+          {activePanel === "open" ? (
+            <aside className="side-panel" aria-label="Open CanvasRoom board">
+              <div className="panel-heading">
+                <div><span className="eyebrow">Board-native document</span><h2>Open board</h2></div>
+                <button className="icon-button" onClick={() => setActivePanel(null)} aria-label="Close open board panel"><X size={18} /></button>
+              </div>
+
+              <p className="board-file-intro">
+                Choose a <strong>.canvasroom</strong> file. CanvasRoom will inspect it first, then let you confirm before replacing this board.
+              </p>
+
+              <button
+                className="board-file-picker"
+                disabled={boardFileBusy}
+                onClick={() => importInputRef.current?.click()}
+                onDragOver={(event) => event.preventDefault()}
+                onDrop={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  const file = event.dataTransfer.files[0];
+                  if (file) void inspectBoardFile(file);
+                }}
+                type="button"
+              >
+                <span className="board-file-picker-icon"><Upload size={20} /></span>
+                <span><strong>{boardFileBusy ? "Reading board…" : "Choose a board file"}</strong><small>or drop it here · .canvasroom and legacy JSON</small></span>
+              </button>
+
+              {boardFileCandidate && boardFileSummary ? (
+                <div className="board-file-selection" aria-live="polite">
+                  <span className="board-file-selection-icon"><FileCheck2 size={19} /></span>
+                  <div>
+                    <strong>{boardFileSummary.title}</strong>
+                    <span>{boardFileCandidate.file.name}</span>
+                    <small>
+                      {boardFileSummary.objectCount} {boardFileSummary.objectCount === 1 ? "object" : "objects"} · {boardFileSummary.attachmentCount} {boardFileSummary.attachmentCount === 1 ? "attachment" : "attachments"}
+                    </small>
+                    <small>{formatBoardDate(boardFileSummary.exportedAt)}</small>
+                  </div>
+                </div>
+              ) : null}
+
+              {boardFileError ? <p className="board-file-error" role="alert">{boardFileError}</p> : null}
+
+              <div className="board-file-actions">
+                <button className="secondary-button" onClick={() => setActivePanel(null)} type="button">Cancel</button>
+                <button className="primary-button" disabled={!boardFileCandidate || boardFileBusy} onClick={() => void openBoardCandidate()} type="button">
+                  <FolderOpen size={15} /> Open this board
+                </button>
+              </div>
+              <p className="board-file-footnote">Your current board stays untouched until you confirm. It is already saved locally on this device.</p>
+            </aside>
+          ) : null}
+
           <MediaLibrary
             open={activePanel === "media"}
             assets={assets}
@@ -631,12 +739,13 @@ export function WhiteboardApp() {
           ) : null}
 
           {activePanel === "record" ? (
-            <aside className="side-panel" aria-label="Recording controls">
+            <aside className="side-panel recording-panel-shell" aria-label="Recording controls">
               <div className="panel-heading">
                 <div><span className="eyebrow">Capture this explanation</span><h2>Recording studio</h2></div>
                 <button className="icon-button" onClick={() => setActivePanel(null)} aria-label="Close recording panel"><X size={18} /></button>
               </div>
               <RecordingPanel
+                className="recording-panel-content"
                 getSourceCanvas={getSourceCanvas}
                 onStatusChange={(status) => setRecording(status === "recording" || status === "paused" || status === "preparing" || status === "stopping")}
                 onRecordingSaved={(_result, save) => showToast(`Recording saved as ${save.fileName}.`)}
@@ -653,10 +762,10 @@ export function WhiteboardApp() {
         ref={importInputRef}
         type="file"
         className="visually-hidden"
-        accept=".json,.canvasroom.json,application/json"
+        accept={CANVASROOM_BOARD_ACCEPT}
         onChange={(event) => {
           const file = event.target.files?.[0];
-          if (file) void importBoard(file).catch((error) => showToast(error instanceof Error ? error.message : "Import failed."));
+          if (file) void inspectBoardFile(file);
           event.target.value = "";
         }}
       />
