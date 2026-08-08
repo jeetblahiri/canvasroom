@@ -17,6 +17,7 @@ import {
   Play,
   Save,
   Square as SquareIcon,
+  Trash2,
   type LucideIcon,
 } from "lucide-react";
 import {
@@ -27,6 +28,7 @@ import {
   requestRecordingSaveTarget,
   saveRecordingBlob,
   type RecordingResult,
+  type RecordingCaptureMode,
   type RecordingSaveResult,
   type RecordingStatus,
   type RecordingToolRailOptions,
@@ -36,6 +38,8 @@ import {
 } from "@/lib/recording";
 
 export interface RecordingPanelProps {
+  /** Use screen mode to record the complete visible CanvasRoom tab. */
+  captureMode?: RecordingCaptureMode;
   /** A mounted board canvas is recorded without showing a screen-share dialog. */
   sourceCanvas?: HTMLCanvasElement | null;
   /** Useful when the canvas lives in a ref and can change between renders. */
@@ -49,6 +53,7 @@ export interface RecordingPanelProps {
     recording: RecordingResult,
     save: RecordingSaveResult,
   ) => void;
+  onRecordingDiscarded?: () => void;
   onError?: (error: Error) => void;
 }
 
@@ -125,11 +130,12 @@ function Icon({
   name,
   size = 16,
 }: {
-  name: "record" | "pause" | "play" | "stop" | "mic" | "camera" | "save" | "preview";
+  name: "record" | "pause" | "play" | "stop" | "mic" | "camera" | "save" | "preview" | "discard";
   size?: number;
 }) {
   const icons: Record<typeof name, LucideIcon> = {
     camera: Camera,
+    discard: Trash2,
     mic: Mic,
     pause: Pause,
     play: Play,
@@ -205,6 +211,7 @@ function ToggleRow({
 }
 
 export function RecordingPanel({
+  captureMode = "canvas",
   sourceCanvas,
   getSourceCanvas,
   className,
@@ -213,12 +220,20 @@ export function RecordingPanel({
   toolRail,
   onStatusChange,
   onRecordingSaved,
+  onRecordingDiscarded,
   onError,
 }: RecordingPanelProps) {
   const recorderRef = useRef<WhiteboardRecorder | null>(null);
   const previewVideoRef = useRef<HTMLVideoElement | null>(null);
+  const previewCameraVideoRef = useRef<HTMLVideoElement | null>(null);
+  const selfViewVideoRef = useRef<HTMLVideoElement | null>(null);
   const mountedRef = useRef(false);
-  const callbackRef = useRef({ onStatusChange, onRecordingSaved, onError });
+  const callbackRef = useRef({
+    onStatusChange,
+    onRecordingSaved,
+    onRecordingDiscarded,
+    onError,
+  });
 
   const [status, setStatus] = useState<RecordingStatus>("idle");
   const [microphoneEnabled, setMicrophoneEnabled] = useState(
@@ -236,10 +251,18 @@ export function RecordingPanel({
   const [saving, setSaving] = useState(false);
   const [supported, setSupported] = useState(true);
   const [previewStream, setPreviewStream] = useState<MediaStream | null>(null);
+  const [cameraPreviewStream, setCameraPreviewStream] =
+    useState<MediaStream | null>(null);
+  const [confirmDiscard, setConfirmDiscard] = useState(false);
 
   useEffect(() => {
-    callbackRef.current = { onStatusChange, onRecordingSaved, onError };
-  }, [onError, onRecordingSaved, onStatusChange]);
+    callbackRef.current = {
+      onStatusChange,
+      onRecordingSaved,
+      onRecordingDiscarded,
+      onError,
+    };
+  }, [onError, onRecordingDiscarded, onRecordingSaved, onStatusChange]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -247,39 +270,28 @@ export function RecordingPanel({
       if (mountedRef.current) setSupported(isRecordingSupported());
     });
 
-    const handleSaved = async (recording: RecordingResult) => {
-      if (mountedRef.current) setSaving(true);
-      try {
-        // Source-ended events do not carry a user gesture, so download is the
-        // only cross-browser-safe destination at that point.
-        const save = await saveRecordingBlob(recording.blob, {
-          fileName: recording.suggestedFileName,
-          target: { kind: "download" },
-        });
-        if (mountedRef.current) {
-          setSaveMessage(`Saved ${save.fileName}`);
-          callbackRef.current.onRecordingSaved?.(recording, save);
-        }
-      } catch (error) {
-        const value = error instanceof Error ? error : new Error(String(error));
-        if (mountedRef.current) setErrorMessage(humanizeRecordingError(value));
-        callbackRef.current.onError?.(value);
-      } finally {
-        if (mountedRef.current) setSaving(false);
+    const handleSourceEnded = () => {
+      if (mountedRef.current) {
+        setSaving(false);
+        setSaveMessage("Screen sharing ended. Nothing was saved.");
+        callbackRef.current.onRecordingDiscarded?.();
       }
     };
 
     const recorder = new WhiteboardRecorder({
       onStatusChange: (nextStatus) => {
         if (mountedRef.current) setStatus(nextStatus);
-        if (mountedRef.current && nextStatus === "idle") setPreviewStream(null);
+        if (mountedRef.current && nextStatus === "idle") {
+          setPreviewStream(null);
+          setCameraPreviewStream(null);
+        }
         callbackRef.current.onStatusChange?.(nextStatus);
       },
       onError: (error) => {
         if (mountedRef.current) setErrorMessage(humanizeRecordingError(error));
         callbackRef.current.onError?.(error);
       },
-      onSourceEnded: handleSaved,
+      onSourceEnded: handleSourceEnded,
     });
     recorderRef.current = recorder;
 
@@ -302,6 +314,20 @@ export function RecordingPanel({
   }, [previewStream]);
 
   useEffect(() => {
+    const videos = [previewCameraVideoRef.current, selfViewVideoRef.current];
+    for (const video of videos) {
+      if (!video) continue;
+      video.srcObject = cameraPreviewStream;
+      if (cameraPreviewStream) void video.play().catch(() => undefined);
+    }
+    return () => {
+      for (const video of videos) {
+        if (video?.srcObject === cameraPreviewStream) video.srcObject = null;
+      }
+    };
+  }, [cameraPreviewStream, status]);
+
+  useEffect(() => {
     if (status !== "recording" && status !== "paused") {
       return;
     }
@@ -321,6 +347,7 @@ export function RecordingPanel({
 
   const recordingOptions = useMemo(
     () => ({
+      captureMode,
       sourceCanvas: sourceCanvas ?? getSourceCanvas?.() ?? null,
       includeMicrophone: microphoneEnabled,
       includeCamera: cameraEnabled,
@@ -335,10 +362,11 @@ export function RecordingPanel({
         size: webcamSize,
         mirror: true,
       },
-      toolRail,
+      toolRail: captureMode === "screen" ? undefined : toolRail,
     }),
     [
       cameraEnabled,
+      captureMode,
       displayAudioEnabled,
       getSourceCanvas,
       microphoneEnabled,
@@ -355,8 +383,10 @@ export function RecordingPanel({
   }, [recordingOptions.webcam]);
 
   useEffect(() => {
-    recorderRef.current?.updateToolRail(toolRail);
-  }, [toolRail]);
+    recorderRef.current?.updateToolRail(
+      captureMode === "screen" ? undefined : toolRail,
+    );
+  }, [captureMode, toolRail]);
 
   const preparePreview = useCallback(async () => {
     const recorder = recorderRef.current;
@@ -366,7 +396,10 @@ export function RecordingPanel({
     setElapsedMs(0);
     try {
       const preview = await recorder.prepare(recordingOptions);
-      if (mountedRef.current) setPreviewStream(preview.stream);
+      if (mountedRef.current) {
+        setPreviewStream(preview.stream);
+        setCameraPreviewStream(preview.cameraStream ?? null);
+      }
     } catch (error) {
       const value = error instanceof Error ? error : new Error(String(error));
       if (mountedRef.current) setErrorMessage(humanizeRecordingError(value));
@@ -393,6 +426,7 @@ export function RecordingPanel({
   const resetPreview = useCallback(() => {
     recorderRef.current?.cancelPreview();
     setPreviewStream(null);
+    setCameraPreviewStream(null);
     setErrorMessage(null);
   }, []);
 
@@ -417,6 +451,13 @@ export function RecordingPanel({
         recordingPromise,
         targetPromise,
       ]);
+      if (target.kind === "cancelled") {
+        if (mountedRef.current) {
+          setSaveMessage("Recording discarded. Nothing was saved.");
+          callbackRef.current.onRecordingDiscarded?.();
+        }
+        return;
+      }
       const save = await saveRecordingBlob(recording.blob, {
         fileName: recording.suggestedFileName,
         target,
@@ -438,13 +479,27 @@ export function RecordingPanel({
     }
   }, [active]);
 
+  const discardRecording = useCallback(() => {
+    recorderRef.current?.cancel();
+    setConfirmDiscard(false);
+    setPreviewStream(null);
+    setCameraPreviewStream(null);
+    setElapsedMs(0);
+    setErrorMessage(null);
+    setSaveMessage("Recording discarded. Nothing was saved.");
+    callbackRef.current.onRecordingDiscarded?.();
+  }, []);
+
   const togglePause = useCallback(() => {
     if (status === "paused") recorderRef.current?.resume();
     else recorderRef.current?.pause();
   }, [status]);
 
-  const hasDirectCanvas = Boolean(sourceCanvas || getSourceCanvas);
-  const sourceDescription = hasDirectCanvas
+  const hasDirectCanvas =
+    captureMode === "canvas" && Boolean(sourceCanvas || getSourceCanvas);
+  const sourceDescription = captureMode === "screen"
+    ? "Records the complete visible CanvasRoom tab"
+    : hasDirectCanvas
     ? "Captures the visible board and pen column"
     : "Choose a tab, window, or screen when recording starts";
 
@@ -467,87 +522,156 @@ export function RecordingPanel({
 
   if (active || status === "stopping" || saving) {
     return (
-      <section
-        aria-label="Active recording controls"
-        className={className}
-        style={{
-          alignItems: "center",
-          background: "rgba(17, 21, 19, 0.96)",
-          border: "1px solid rgba(255,255,255,0.14)",
-          borderRadius: 14,
-          boxShadow: "0 14px 38px rgba(17,21,19,0.3)",
-          color: "#fff",
-          display: "flex",
-          gap: 10,
-          maxWidth: "none",
-          padding: "7px 8px 7px 11px",
-          width: "max-content",
-        }}
-      >
-        <span
-          aria-hidden="true"
+      <>
+        {active && cameraPreviewStream ? (
+          <video
+            aria-label="Live presenter self-view"
+            autoPlay
+            className={`recording-self-view is-${webcamShape} is-${webcamPosition} is-${webcamSize}`}
+            muted
+            playsInline
+            ref={selfViewVideoRef}
+          />
+        ) : null}
+        <section
+          aria-label="Active recording controls"
+          className={className}
           style={{
-            background: status === "paused" ? "#dfa13e" : "#ff7655",
-            borderRadius: "50%",
-            boxShadow: status === "recording" ? "0 0 0 4px rgba(255,118,85,0.16)" : "none",
-            height: 8,
-            width: 8,
-          }}
-        />
-        <span
-          aria-live="polite"
-          style={{
-            minWidth: 58,
-            fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
-            fontSize: 13,
-            fontVariantNumeric: "tabular-nums",
-            fontWeight: 750,
+            alignItems: "center",
+            background: "rgba(17, 21, 19, 0.96)",
+            border: "1px solid rgba(255,255,255,0.14)",
+            borderRadius: 14,
+            boxShadow: "0 14px 38px rgba(17,21,19,0.3)",
+            color: "#fff",
+            display: "flex",
+            gap: 10,
+            maxWidth: "none",
+            padding: "7px 8px 7px 11px",
+            width: "max-content",
           }}
         >
-          {formatElapsed(elapsedMs)}
-        </span>
-        {active ? (
-          <>
-            <button
-              aria-label={status === "paused" ? "Resume recording" : "Pause recording"}
-              onClick={togglePause}
-              style={{
-                ...controlStyle,
-                background: "rgba(255,255,255,0.09)",
-                borderColor: "rgba(255,255,255,0.12)",
-                color: "#fff",
-                cursor: "pointer",
-                minHeight: 34,
-                padding: "6px 9px",
-              }}
-              type="button"
-            >
-              <Icon name={status === "paused" ? "play" : "pause"} />
-            </button>
-            <button
-              onClick={() => void stopAndSave()}
-              style={{
-                ...controlStyle,
-                background: "#ff7655",
-                borderColor: "#ff7655",
-                color: "#111513",
-                cursor: "pointer",
-                fontSize: 11,
-                fontWeight: 800,
-                minHeight: 34,
-                padding: "6px 10px",
-              }}
-              type="button"
-            >
-              <Icon name="stop" /> Stop
-            </button>
-          </>
-        ) : (
-          <span style={{ color: "#c5ccc8", fontSize: 10, padding: "0 7px" }}>
-            {saving ? "Saving recording…" : "Finishing…"}
+          <span
+            aria-hidden="true"
+            style={{
+              background: status === "paused" ? "#dfa13e" : "#ff7655",
+              borderRadius: "50%",
+              boxShadow: status === "recording" ? "0 0 0 4px rgba(255,118,85,0.16)" : "none",
+              height: 8,
+              width: 8,
+            }}
+          />
+          <span
+            aria-live="polite"
+            style={{
+              minWidth: 58,
+              fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+              fontSize: 13,
+              fontVariantNumeric: "tabular-nums",
+              fontWeight: 750,
+            }}
+          >
+            {formatElapsed(elapsedMs)}
           </span>
-        )}
-      </section>
+          {active ? (
+            confirmDiscard ? (
+              <>
+                <span style={{ color: "#fff", fontSize: 11, fontWeight: 700 }}>
+                  Discard recording?
+                </span>
+                <button
+                  onClick={() => setConfirmDiscard(false)}
+                  style={{
+                    ...controlStyle,
+                    background: "rgba(255,255,255,0.09)",
+                    borderColor: "rgba(255,255,255,0.12)",
+                    color: "#fff",
+                    cursor: "pointer",
+                    fontSize: 11,
+                    minHeight: 34,
+                    padding: "6px 9px",
+                  }}
+                  type="button"
+                >
+                  Keep
+                </button>
+                <button
+                  onClick={discardRecording}
+                  style={{
+                    ...controlStyle,
+                    background: "#ff7655",
+                    borderColor: "#ff7655",
+                    color: "#111513",
+                    cursor: "pointer",
+                    fontSize: 11,
+                    fontWeight: 800,
+                    minHeight: 34,
+                    padding: "6px 10px",
+                  }}
+                  type="button"
+                >
+                  Discard now
+                </button>
+              </>
+            ) : (
+              <>
+                <button
+                  aria-label={status === "paused" ? "Resume recording" : "Pause recording"}
+                  onClick={togglePause}
+                  style={{
+                    ...controlStyle,
+                    background: "rgba(255,255,255,0.09)",
+                    borderColor: "rgba(255,255,255,0.12)",
+                    color: "#fff",
+                    cursor: "pointer",
+                    minHeight: 34,
+                    padding: "6px 9px",
+                  }}
+                  type="button"
+                >
+                  <Icon name={status === "paused" ? "play" : "pause"} />
+                </button>
+                <button
+                  aria-label="Discard recording"
+                  onClick={() => setConfirmDiscard(true)}
+                  style={{
+                    ...controlStyle,
+                    background: "rgba(255,255,255,0.09)",
+                    borderColor: "rgba(255,255,255,0.12)",
+                    color: "#fff",
+                    cursor: "pointer",
+                    minHeight: 34,
+                    padding: "6px 9px",
+                  }}
+                  type="button"
+                >
+                  <Icon name="discard" />
+                </button>
+                <button
+                  onClick={() => void stopAndSave()}
+                  style={{
+                    ...controlStyle,
+                    background: "#ff7655",
+                    borderColor: "#ff7655",
+                    color: "#111513",
+                    cursor: "pointer",
+                    fontSize: 11,
+                    fontWeight: 800,
+                    minHeight: 34,
+                    padding: "6px 10px",
+                  }}
+                  type="button"
+                >
+                  <Icon name="stop" /> Stop &amp; save
+                </button>
+              </>
+            )
+          ) : (
+            <span style={{ color: "#c5ccc8", fontSize: 10, padding: "0 7px" }}>
+              {saving ? "Saving recording…" : "Finishing…"}
+            </span>
+          )}
+        </section>
+      </>
     );
   }
 
@@ -626,7 +750,7 @@ export function RecordingPanel({
         }}
       >
         <video
-          aria-label="Exact board and camera composition"
+          aria-label="Exact screen recording preview"
           autoPlay
           muted
           playsInline
@@ -638,6 +762,32 @@ export function RecordingPanel({
             width: "100%",
           }}
         />
+        {previewStream && cameraPreviewStream ? (
+          <video
+            aria-label="Live camera placement preview"
+            autoPlay
+            muted
+            playsInline
+            ref={previewCameraVideoRef}
+            style={{
+              aspectRatio: "1 / 1",
+              border: "2px solid rgba(255,255,255,0.96)",
+              borderRadius: webcamShape === "circle" ? "50%" : 10,
+              boxShadow: "0 5px 16px rgba(0,0,0,0.28)",
+              height:
+                webcamSize === "small"
+                  ? "26%"
+                  : webcamSize === "large"
+                    ? "42%"
+                    : "34%",
+              objectFit: "cover",
+              position: "absolute",
+              ...(webcamPosition.startsWith("top") ? { top: 9 } : { bottom: 9 }),
+              ...(webcamPosition.endsWith("left") ? { left: 9 } : { right: 9 }),
+              transform: "scaleX(-1)",
+            }}
+          />
+        ) : null}
         {!previewStream ? (
           <div
             style={{
@@ -668,7 +818,9 @@ export function RecordingPanel({
             </span>
             <strong style={{ fontSize: 12 }}>Preview before you record</strong>
             <span style={{ color: "#9ea7a2", fontSize: 10, lineHeight: 1.4 }}>
-              Check the visible board, pen column, and your camera placement first.
+              {captureMode === "screen"
+                ? "Choose the current CanvasRoom tab, then check the whole app and your camera placement."
+                : "Check the visible board, pen column, and your camera placement first."}
             </span>
           </div>
         ) : null}
@@ -702,7 +854,11 @@ export function RecordingPanel({
             margin: "-4px 2px 10px",
           }}
         >
-          <span>Camera and board are ready.</span>
+          <span>
+            {captureMode === "screen"
+              ? "Whole CanvasRoom tab and camera are ready."
+              : "Camera and board are ready."}
+          </span>
           <button
             onClick={resetPreview}
             style={{
@@ -1030,7 +1186,9 @@ export function RecordingPanel({
           textAlign: "center",
         }}
       >
-        Preview grants camera and microphone access, but recording starts only after you confirm.
+        {captureMode === "screen"
+          ? "For the complete interface, choose This Tab and select the CanvasRoom tab. Recording starts only after you confirm."
+          : "Preview grants camera and microphone access, but recording starts only after you confirm."}
       </p>
     </section>
   );

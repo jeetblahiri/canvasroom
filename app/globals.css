@@ -677,7 +677,7 @@ textarea:focus-visible,
 }
 
 .side-panel.recording-panel-shell.is-active {
-  inset: auto 50% 16px auto;
+  inset: 0;
   width: auto;
   min-width: 0;
   display: block;
@@ -687,12 +687,43 @@ textarea:focus-visible,
   background: transparent;
   box-shadow: none;
   backdrop-filter: none;
-  transform: translateX(50%);
+  pointer-events: none;
 }
 
 .recording-panel-shell.is-active > .panel-heading {
   display: none;
 }
+
+.recording-panel-shell.is-active .recording-panel-content {
+  position: fixed;
+  left: 50%;
+  bottom: 16px;
+  z-index: 72;
+  pointer-events: auto;
+  transform: translateX(-50%);
+}
+
+.recording-self-view {
+  position: fixed;
+  z-index: 70;
+  width: 168px;
+  height: 168px;
+  object-fit: cover;
+  pointer-events: none;
+  border: 3px solid rgba(255, 255, 255, 0.98);
+  background: #151917;
+  box-shadow: 0 15px 42px rgba(17, 21, 19, 0.3);
+  transform: scaleX(-1);
+}
+
+.recording-self-view.is-circle { border-radius: 50%; }
+.recording-self-view.is-square { border-radius: 18px; }
+.recording-self-view.is-small { width: 120px; height: 120px; }
+.recording-self-view.is-large { width: 220px; height: 220px; }
+.recording-self-view.is-top-left { top: 112px; left: 84px; }
+.recording-self-view.is-top-right { top: 112px; right: 22px; }
+.recording-self-view.is-bottom-left { bottom: 22px; left: 84px; }
+.recording-self-view.is-bottom-right { right: 22px; bottom: 22px; }
 
 @keyframes panel-in {
   from { opacity: 0; transform: translateX(10px) scale(0.99); }
@@ -1297,6 +1328,21 @@ textarea:focus-visible,
     width: auto;
     border-radius: 16px;
   }
+
+  .recording-panel-shell.is-active .recording-panel-content {
+    width: calc(100vw - 16px) !important;
+    max-width: calc(100vw - 16px) !important;
+    justify-content: center;
+    flex-wrap: wrap;
+  }
+
+  .recording-self-view { width: 128px; height: 128px; }
+  .recording-self-view.is-small { width: 96px; height: 96px; }
+  .recording-self-view.is-large { width: 156px; height: 156px; }
+  .recording-self-view.is-top-left { top: 98px; left: 10px; }
+  .recording-self-view.is-top-right { top: 98px; right: 10px; }
+  .recording-self-view.is-bottom-left { bottom: 70px; left: 10px; }
+  .recording-self-view.is-bottom-right { right: 10px; bottom: 70px; }
 
   .welcome-card { padding: 20px; transform: translate(-50%, -52%); }
   .shortcut-grid { grid-template-columns: 1fr; }

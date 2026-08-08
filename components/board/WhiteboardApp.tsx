@@ -88,7 +88,7 @@ const DEFAULT_BOARD_ID = "canvasroom-home";
 const DEFAULT_TITLE = "Untitled board";
 const COLORS = ["#171b19", "#5470ff", "#ff7655", "#d09c16", "#238261"];
 
-type ActivePanel = "media" | "device" | "record" | "open" | null;
+type ActivePanel = "media" | "device" | "open" | null;
 type SaveState = "loading" | "saving" | "saved" | "error";
 type BoardFileCandidate = { file: File; document: CanvasRoomBoardDocument };
 type BoardTab = Omit<StoredBoard<BoardSnapshot>, "viewport"> & { viewport: BoardViewport };
@@ -174,6 +174,7 @@ export function WhiteboardApp() {
   const [canUndo, setCanUndo] = useState(false);
   const [canRedo, setCanRedo] = useState(false);
   const [recording, setRecording] = useState(false);
+  const [recordPanelOpen, setRecordPanelOpen] = useState(false);
   const [boardFileCandidate, setBoardFileCandidate] = useState<BoardFileCandidate | null>(null);
   const [boardFileBusy, setBoardFileBusy] = useState(false);
   const [boardFileError, setBoardFileError] = useState<string | null>(null);
@@ -626,26 +627,15 @@ export function WhiteboardApp() {
   }, [activeBoardId, assets, boardFileBusy, boardFileCandidate, showToast]);
 
   const togglePanel = useCallback((panel: Exclude<ActivePanel, null>) => {
-    if (recording) return;
     setShowWelcome(false);
+    if (!recording) setRecordPanelOpen(false);
     setActivePanel((current) => current === panel ? null : panel);
   }, [recording]);
-
-  const getSourceCanvas = useCallback(() => stageRef.current?.querySelector("canvas") ?? null, []);
 
   const boardFileSummary = useMemo(
     () => boardFileCandidate ? summarizeCanvasRoomDocument(boardFileCandidate.document) : null,
     [boardFileCandidate],
   );
-  const recordingToolRail = useMemo(() => ({
-    activeTool: tool,
-    width: 58,
-    items: [
-      ...tools.map((item) => ({ id: item.id, label: item.label, shortcut: item.key })),
-      { id: "undo", label: "Undo", shortcut: "↶" },
-      { id: "redo", label: "Redo", shortcut: "↷" },
-    ],
-  }), [tool]);
   const toolSettingsVisible = tool === "pen" || tool === "highlighter" || tool === "line" || tool === "rectangle" || tool === "ellipse" || tool === "arrow";
   const saveLabel = saveState === "loading" ? "Opening local board…" : saveState === "saving" ? "Saving locally…" : saveState === "error" ? "Local save needs attention" : "Saved on this device";
   const deviceConnected = deviceState.phase === "connected";
@@ -702,7 +692,15 @@ export function WhiteboardApp() {
           <button className={panelButtonClass("media", activePanel)} onClick={() => togglePanel("media")}>
             <ImageIcon size={15} /><span className="button-label">Media</span>
           </button>
-          <button className={`${panelButtonClass("record", activePanel)} record-button${recording ? " is-recording" : ""}`} onClick={() => togglePanel("record")}>
+          <button
+            className={`topbar-button${recordPanelOpen ? " is-active" : ""} record-button${recording ? " is-recording" : ""}`}
+            onClick={() => {
+              if (recording) return;
+              setShowWelcome(false);
+              setActivePanel(null);
+              setRecordPanelOpen((current) => !current);
+            }}
+          >
             <span className="record-dot" /><span className="button-label">{recording ? "Recording" : "Record"}</span>
           </button>
           <button className="topbar-button" disabled={boardFileBusy} onClick={() => void exportBoard()} title="Export a complete CanvasRoom board file">
@@ -900,16 +898,15 @@ export function WhiteboardApp() {
             </div>
           ) : null}
 
-          {activePanel === "record" ? (
+          {recordPanelOpen ? (
             <aside className={`side-panel recording-panel-shell${recording ? " is-active" : ""}`} aria-label="Recording controls">
               <div className="panel-heading">
                 <div><span className="eyebrow">Capture this explanation</span><h2>Recording studio</h2></div>
-                <button className="icon-button" onClick={() => setActivePanel(null)} aria-label="Close recording panel"><X size={18} /></button>
+                <button className="icon-button" onClick={() => setRecordPanelOpen(false)} aria-label="Close recording panel"><X size={18} /></button>
               </div>
               <RecordingPanel
+                captureMode="screen"
                 className="recording-panel-content"
-                getSourceCanvas={getSourceCanvas}
-                toolRail={recordingToolRail}
                 onStatusChange={(status) => {
                   if (status === "recording" || status === "paused" || status === "stopping") setRecording(true);
                   else if (status !== "idle") setRecording(false);
@@ -917,6 +914,10 @@ export function WhiteboardApp() {
                 onRecordingSaved={(_result, save) => {
                   setRecording(false);
                   showToast(`Recording saved as ${save.fileName}.`);
+                }}
+                onRecordingDiscarded={() => {
+                  setRecording(false);
+                  showToast("Recording discarded. Nothing was saved.");
                 }}
                 onError={(error) => {
                   setRecording(false);

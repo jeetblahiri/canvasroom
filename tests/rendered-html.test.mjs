@@ -33,10 +33,12 @@ test("server-renders the complete CanvasRoom workspace", async () => {
 });
 
 test("ships drawing, device, recording, persistence, and social-preview capabilities", async () => {
-  const [canvas, device, recording, boardFile, storage, packageJson, ogStats] = await Promise.all([
+  const [canvas, device, recording, recordingPanel, whiteboardApp, boardFile, storage, packageJson, ogStats] = await Promise.all([
     readFile(new URL("../components/board/WhiteboardCanvas.tsx", import.meta.url), "utf8"),
     readFile(new URL("../lib/device-link.ts", import.meta.url), "utf8"),
     readFile(new URL("../lib/recording.ts", import.meta.url), "utf8"),
+    readFile(new URL("../components/board/RecordingPanel.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../components/board/WhiteboardApp.tsx", import.meta.url), "utf8"),
     readFile(new URL("../lib/board-file.ts", import.meta.url), "utf8"),
     readFile(new URL("../lib/local-board-store.ts", import.meta.url), "utf8"),
     readFile(new URL("../package.json", import.meta.url), "utf8"),
@@ -53,6 +55,11 @@ test("ships drawing, device, recording, persistence, and social-preview capabili
   assert.match(recording, /previewing/);
   assert.match(recording, /async prepare\(/);
   assert.match(recording, /drawRecordingToolRail/);
+  assert.match(recording, /preferCurrentTab: true/);
+  assert.match(recording, /kind: "cancelled"/);
+  assert.match(recordingPanel, /recording-self-view/);
+  assert.match(recordingPanel, /Discard now/);
+  assert.match(whiteboardApp, /captureMode="screen"/);
   assert.match(boardFile, /\.canvasroom/);
   assert.match(boardFile, /dataUrl/);
   assert.match(storage, /indexedDB\.open/);

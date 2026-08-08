@@ -23,6 +23,7 @@ export type WebcamPosition =
   | "bottom-left"
   | "bottom-right";
 export type WebcamSize = "small" | "medium" | "large";
+export type RecordingCaptureMode = "canvas" | "screen";
 
 export interface WebcamOverlayOptions {
   shape: WebcamShape;
@@ -48,6 +49,8 @@ export interface RecordingToolRailOptions {
 }
 
 export interface RecordingStartOptions {
+  /** Record either the supplied board canvas or a browser-selected tab/screen. */
+  captureMode?: RecordingCaptureMode;
   /** The preferred board source. It must be origin-clean for captureStream(). */
   sourceCanvas?: HTMLCanvasElement | null;
   includeMicrophone?: boolean;
@@ -75,6 +78,8 @@ export interface RecordingResult {
 export interface RecordingPreview {
   /** The exact composited stream that will be passed to MediaRecorder. */
   stream: MediaStream;
+  /** Camera-only stream for the visible presenter self-view. */
+  cameraStream?: MediaStream;
   width: number;
   height: number;
 }
@@ -109,7 +114,8 @@ interface SaveFilePickerWindow extends Window {
 
 export type RecordingSaveTarget =
   | { kind: "file-system"; handle: FileHandleLike }
-  | { kind: "download"; pickerCancelled?: boolean };
+  | { kind: "download" }
+  | { kind: "cancelled" };
 
 export interface RecordingSaveResult {
   method: "file-system" | "download";
@@ -361,8 +367,8 @@ export function humanizeRecordingError(error: unknown): string {
 
 /**
  * Open the native save dialog. Call this directly from a click handler so the
- * browser still considers it a user gesture. Unsupported/cancelled pickers use
- * the download fallback, ensuring a completed recording is never discarded.
+ * browser still considers it a user gesture. Unsupported pickers use the
+ * download fallback; cancelling a supported picker explicitly saves nothing.
  */
 export async function requestRecordingSaveTarget(options: {
   suggestedFileName: string;
@@ -389,7 +395,7 @@ export async function requestRecordingSaveTarget(options: {
     return { kind: "file-system", handle };
   } catch (error) {
     if (asError(error).name === "AbortError") {
-      return { kind: "download", pickerCancelled: true };
+      return { kind: "cancelled" };
     }
     // Saving can still proceed safely through a browser download.
     return { kind: "download" };
@@ -421,6 +427,9 @@ export async function saveRecordingBlob(
   }
 
   const target = options.target ?? { kind: "download" };
+  if (target.kind === "cancelled") {
+    throw new DOMException("The save dialog was cancelled.", "AbortError");
+  }
   if (target.kind === "file-system") {
     let writable: WritableFileLike | null = null;
     try {
@@ -474,6 +483,7 @@ export class WhiteboardRecorder {
   private sourceEndedHandler: (() => void) | null = null;
   private toolRail: RecordingToolRailOptions | null = null;
   private toolRailRenderWidth = 0;
+  private cameraOverlayInSource = false;
 
   constructor(callbacks: RecordingCallbacks = {}) {
     this.callbacks = callbacks;
@@ -541,6 +551,7 @@ export class WhiteboardRecorder {
     this.totalPausedMs = 0;
     this.frameRate = Math.min(60, Math.max(12, options.frameRate ?? 30));
     this.overlay = { ...DEFAULT_WEBCAM, ...options.webcam };
+    this.cameraOverlayInSource = options.captureMode === "screen";
     this.toolRail = options.toolRail ? { ...options.toolRail, items: [...options.toolRail.items] } : null;
     this.mimeType = selectRecordingMimeType(options.preferredMimeTypes);
     this.setStatus("preparing");
@@ -557,6 +568,9 @@ export class WhiteboardRecorder {
       this.setStatus("previewing");
       return {
         stream: this.outputStream,
+        cameraStream: this.userMediaStream?.getVideoTracks().length
+          ? new MediaStream(this.userMediaStream.getVideoTracks())
+          : undefined,
         width: this.compositorCanvas.width,
         height: this.compositorCanvas.height,
       };
@@ -581,12 +595,19 @@ export class WhiteboardRecorder {
     try {
       this.mimeType = selectRecordingMimeType(options.preferredMimeTypes);
       this.createMediaRecorder(options.videoBitsPerSecond);
-      this.startedAt = now();
       this.pausedAt = 0;
       this.totalPausedMs = 0;
       this.chunks = [];
-      this.mediaRecorder?.start(1_000);
       this.setStatus("recording");
+      // Give React two paints to collapse the studio and mount the presenter
+      // self-view before the first recorded frame is encoded.
+      await new Promise<void>((resolve) => {
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+      });
+      const recorder = this.mediaRecorder;
+      if (!recorder || this.status !== "recording") return;
+      this.startedAt = now();
+      recorder.start(1_000);
     } catch (error) {
       this.releaseResources();
       throw this.reportError(error);
@@ -604,7 +625,7 @@ export class WhiteboardRecorder {
   }
 
   private async acquireBoardSource(options: RecordingStartOptions): Promise<void> {
-    const candidate = options.sourceCanvas;
+    const candidate = options.captureMode === "screen" ? null : options.sourceCanvas;
     if (
       candidate &&
       candidate.width > 0 &&
@@ -629,10 +650,21 @@ export class WhiteboardRecorder {
       );
     }
 
-    this.sourceStream = await navigator.mediaDevices.getDisplayMedia({
-      video: { frameRate: { ideal: this.frameRate, max: this.frameRate } },
+    const displayOptions = {
+      video: {
+        displaySurface: "browser",
+        frameRate: { ideal: this.frameRate, max: this.frameRate },
+      },
       audio: options.includeDisplayAudio ?? false,
-    });
+      // Chromium uses these hints to put the current CanvasRoom tab first.
+      // Other browsers safely ignore unsupported display-capture hints.
+      preferCurrentTab: true,
+      selfBrowserSurface: "include",
+      surfaceSwitching: "include",
+    } as DisplayMediaStreamOptions;
+    this.sourceStream = await navigator.mediaDevices.getDisplayMedia(
+      displayOptions,
+    );
     const videoTrack = this.sourceStream.getVideoTracks()[0];
     if (!videoTrack) throw new Error("The selected screen did not provide video.");
 
@@ -802,7 +834,11 @@ export class WhiteboardRecorder {
     }
     context.restore();
 
-    if (this.cameraVideo && this.cameraVideo.readyState >= 2) {
+    if (
+      this.cameraVideo &&
+      this.cameraVideo.readyState >= 2 &&
+      !this.cameraOverlayInSource
+    ) {
       this.drawWebcamOverlay(context, canvas.width, canvas.height);
     }
   }
@@ -949,6 +985,28 @@ export class WhiteboardRecorder {
     return result;
   }
 
+  /** End an active recording immediately without creating or saving a file. */
+  cancel(): void {
+    if (this.mediaRecorder) {
+      this.mediaRecorder.ondataavailable = null;
+      this.mediaRecorder.onerror = null;
+      this.mediaRecorder.onstop = null;
+      try {
+        if (this.mediaRecorder.state !== "inactive") this.mediaRecorder.stop();
+      } catch {
+        // Tracks and the encoder are released below even if stop() races.
+      }
+    }
+    this.stopResolution?.reject(new Error("Recording was discarded."));
+    this.stopResolution = null;
+    this.releaseResources();
+    this.chunks = [];
+    this.startedAt = 0;
+    this.pausedAt = 0;
+    this.totalPausedMs = 0;
+    this.setStatus("idle");
+  }
+
   private finishStop(): void {
     const durationMs = this.getElapsedMs();
     const mimeType = this.mimeType || this.chunks[0]?.type || "video/webm";
@@ -1012,6 +1070,7 @@ export class WhiteboardRecorder {
     this.compositorContext = null;
     this.toolRail = null;
     this.toolRailRenderWidth = 0;
+    this.cameraOverlayInSource = false;
     this.mediaRecorder = null;
 
     if (this.audioContext && this.audioContext.state !== "closed") {
