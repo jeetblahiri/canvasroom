@@ -46,6 +46,7 @@ test("ships drawing, device, recording, persistence, and social-preview capabili
   ]);
 
   assert.match(canvas, /getCoalescedEvents/);
+  assert.match(canvas, /isPenEraserGesture/);
   assert.match(canvas, /onStrokeEvent/);
   assert.match(canvas, /documentId/);
   assert.match(device, /RTCPeerConnection/);
@@ -56,6 +57,8 @@ test("ships drawing, device, recording, persistence, and social-preview capabili
   assert.match(recording, /async prepare\(/);
   assert.match(recording, /drawRecordingToolRail/);
   assert.match(recording, /preferCurrentTab: true/);
+  assert.match(recording, /audioBitsPerSecond/);
+  assert.match(recording, /sampleRate: 48_000/);
   assert.match(recording, /kind: "cancelled"/);
   assert.match(recordingPanel, /recording-self-view/);
   assert.match(recordingPanel, /Discard now/);

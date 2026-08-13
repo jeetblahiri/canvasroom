@@ -157,6 +157,23 @@ function isShapeTool(tool: BoardTool): tool is ShapeTool {
   return tool === "line" || tool === "rectangle" || tool === "ellipse" || tool === "arrow";
 }
 
+function isPenEraserGesture(event: {
+  pointerType: string;
+  button: number;
+  buttons: number;
+}): boolean {
+  if (event.pointerType !== "pen") return false;
+  // Pointer Events standardizes a pen eraser as button 5 / buttons bit 32.
+  // Wacom drivers commonly expose a barrel button as right-click instead, so
+  // that also becomes a temporary eraser while the stylus is pressed.
+  return (
+    event.button === 5 ||
+    (event.buttons & 32) !== 0 ||
+    event.button === 2 ||
+    (event.buttons & 2) !== 0
+  );
+}
+
 function drawStroke(ctx: CanvasRenderingContext2D, stroke: BoardStrokeElement): void {
   if (stroke.points.length === 0) return;
   ctx.save();
@@ -818,7 +835,8 @@ export const WhiteboardCanvas = forwardRef<WhiteboardCanvasHandle, WhiteboardCan
 
     const handlePointerDown = useCallback(
       (event: ReactPointerEvent<HTMLCanvasElement>) => {
-        if (disabled || event.button > 1) return;
+        const penEraserGesture = isPenEraserGesture(event.nativeEvent);
+        if (disabled || (!penEraserGesture && event.button > 1)) return;
         const canvas = canvasRef.current;
         canvas?.focus({ preventScroll: true });
         canvas?.setPointerCapture(event.pointerId);
@@ -838,13 +856,29 @@ export const WhiteboardCanvas = forwardRef<WhiteboardCanvasHandle, WhiteboardCan
           }
         }
 
-        if (event.button === 1 || spacePressedRef.current || tool === "pan") {
+        if (
+          !penEraserGesture &&
+          (event.button === 1 || spacePressedRef.current || tool === "pan")
+        ) {
           interactionRef.current = { kind: "pan", pointerId: event.pointerId, last: screen };
           return;
         }
 
         const world = screenToWorld(screen, viewportRef.current);
         const point = boardPointFromPointer(event.nativeEvent);
+
+        if (penEraserGesture || tool === "eraser") {
+          const elements = currentSnapshotRef.current.elements;
+          interactionRef.current = {
+            kind: "erase",
+            pointerId: event.pointerId,
+            original: elements,
+            elements,
+            changed: false,
+          };
+          eraseAt(world);
+          return;
+        }
 
         if (tool === "pen" || tool === "highlighter") {
           const element: BoardStrokeElement = {
@@ -883,19 +917,6 @@ export const WhiteboardCanvas = forwardRef<WhiteboardCanvasHandle, WhiteboardCan
           interactionRef.current = { kind: "shape", pointerId: event.pointerId, element };
           previewElementRef.current = element;
           scheduleRender();
-          return;
-        }
-
-        if (tool === "eraser") {
-          const elements = currentSnapshotRef.current.elements;
-          interactionRef.current = {
-            kind: "erase",
-            pointerId: event.pointerId,
-            original: elements,
-            elements,
-            changed: false,
-          };
-          eraseAt(world);
           return;
         }
 

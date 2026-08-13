@@ -29,6 +29,7 @@ import {
   saveRecordingBlob,
   type RecordingResult,
   type RecordingCaptureMode,
+  type RecordingPreview,
   type RecordingSaveResult,
   type RecordingStatus,
   type RecordingToolRailOptions,
@@ -46,6 +47,7 @@ export interface RecordingPanelProps {
   getSourceCanvas?: () => HTMLCanvasElement | null;
   className?: string;
   defaultMicrophoneEnabled?: boolean;
+  defaultDisplayAudioEnabled?: boolean;
   defaultCameraEnabled?: boolean;
   toolRail?: RecordingToolRailOptions;
   onStatusChange?: (status: RecordingStatus) => void;
@@ -216,6 +218,7 @@ export function RecordingPanel({
   getSourceCanvas,
   className,
   defaultMicrophoneEnabled = true,
+  defaultDisplayAudioEnabled = true,
   defaultCameraEnabled = true,
   toolRail,
   onStatusChange,
@@ -240,7 +243,9 @@ export function RecordingPanel({
     defaultMicrophoneEnabled,
   );
   const [cameraEnabled, setCameraEnabled] = useState(defaultCameraEnabled);
-  const [displayAudioEnabled, setDisplayAudioEnabled] = useState(false);
+  const [displayAudioEnabled, setDisplayAudioEnabled] = useState(
+    defaultDisplayAudioEnabled,
+  );
   const [webcamShape, setWebcamShape] = useState<WebcamShape>("circle");
   const [webcamPosition, setWebcamPosition] =
     useState<WebcamPosition>("bottom-right");
@@ -253,6 +258,9 @@ export function RecordingPanel({
   const [previewStream, setPreviewStream] = useState<MediaStream | null>(null);
   const [cameraPreviewStream, setCameraPreviewStream] =
     useState<MediaStream | null>(null);
+  const [audioPreview, setAudioPreview] =
+    useState<RecordingPreview["audio"] | null>(null);
+  const [audioLevel, setAudioLevel] = useState(0);
   const [confirmDiscard, setConfirmDiscard] = useState(false);
 
   useEffect(() => {
@@ -284,6 +292,8 @@ export function RecordingPanel({
         if (mountedRef.current && nextStatus === "idle") {
           setPreviewStream(null);
           setCameraPreviewStream(null);
+          setAudioPreview(null);
+          setAudioLevel(0);
         }
         callbackRef.current.onStatusChange?.(nextStatus);
       },
@@ -328,6 +338,39 @@ export function RecordingPanel({
   }, [cameraPreviewStream, status]);
 
   useEffect(() => {
+    const audioTracks = previewStream?.getAudioTracks() ?? [];
+    if (audioTracks.length === 0) return;
+
+    const context = new AudioContext({ sampleRate: 48_000 });
+    const analyser = context.createAnalyser();
+    analyser.fftSize = 512;
+    analyser.smoothingTimeConstant = 0.72;
+    const source = context.createMediaStreamSource(new MediaStream(audioTracks));
+    source.connect(analyser);
+    const samples = new Uint8Array(analyser.fftSize);
+    let frame = 0;
+    const updateLevel = () => {
+      analyser.getByteTimeDomainData(samples);
+      let squareSum = 0;
+      for (const sample of samples) {
+        const normalized = (sample - 128) / 128;
+        squareSum += normalized * normalized;
+      }
+      setAudioLevel(Math.min(1, Math.sqrt(squareSum / samples.length) * 5));
+      frame = requestAnimationFrame(updateLevel);
+    };
+    void context.resume().catch(() => undefined);
+    frame = requestAnimationFrame(updateLevel);
+
+    return () => {
+      cancelAnimationFrame(frame);
+      source.disconnect();
+      analyser.disconnect();
+      void context.close();
+    };
+  }, [previewStream]);
+
+  useEffect(() => {
     if (status !== "recording" && status !== "paused") {
       return;
     }
@@ -352,10 +395,11 @@ export function RecordingPanel({
       includeMicrophone: microphoneEnabled,
       includeCamera: cameraEnabled,
       includeDisplayAudio: displayAudioEnabled,
-      frameRate: 30,
+      frameRate: 60,
       maxWidth: 1920,
       maxHeight: 1080,
-      videoBitsPerSecond: 6_000_000,
+      videoBitsPerSecond: 12_000_000,
+      audioBitsPerSecond: 256_000,
       webcam: {
         shape: webcamShape,
         position: webcamPosition,
@@ -394,11 +438,14 @@ export function RecordingPanel({
     setErrorMessage(null);
     setSaveMessage(null);
     setElapsedMs(0);
+    setAudioPreview(null);
+    setAudioLevel(0);
     try {
       const preview = await recorder.prepare(recordingOptions);
       if (mountedRef.current) {
         setPreviewStream(preview.stream);
         setCameraPreviewStream(preview.cameraStream ?? null);
+        setAudioPreview(preview.audio);
       }
     } catch (error) {
       const value = error instanceof Error ? error : new Error(String(error));
@@ -427,6 +474,8 @@ export function RecordingPanel({
     recorderRef.current?.cancelPreview();
     setPreviewStream(null);
     setCameraPreviewStream(null);
+    setAudioPreview(null);
+    setAudioLevel(0);
     setErrorMessage(null);
   }, []);
 
@@ -484,6 +533,8 @@ export function RecordingPanel({
     setConfirmDiscard(false);
     setPreviewStream(null);
     setCameraPreviewStream(null);
+    setAudioPreview(null);
+    setAudioLevel(0);
     setElapsedMs(0);
     setErrorMessage(null);
     setSaveMessage("Recording discarded. Nothing was saved.");
@@ -854,10 +905,40 @@ export function RecordingPanel({
             margin: "-4px 2px 10px",
           }}
         >
-          <span>
-            {captureMode === "screen"
-              ? "Whole CanvasRoom tab and camera are ready."
-              : "Camera and board are ready."}
+          <span style={{ display: "grid", gap: 2 }}>
+            <span>
+              {captureMode === "screen"
+                ? "Whole CanvasRoom tab and camera are ready."
+                : "Camera and board are ready."}
+            </span>
+            <strong style={{ color: audioPreview?.enabled ? "#47755a" : "#a1483d" }}>
+              {audioPreview?.enabled
+                ? `Sound ready${audioPreview.microphoneLabel ? ` · ${audioPreview.microphoneLabel}` : ""}${audioPreview.systemAudioIncluded ? " + shared audio" : ""}${audioPreview.sampleRate ? ` · ${Math.round(audioPreview.sampleRate / 1_000)} kHz` : ""}`
+                : "No sound track detected"}
+            </strong>
+            {audioPreview?.enabled ? (
+              <span
+                aria-label="Live microphone and shared-audio level"
+                style={{
+                  background: "#d9ddd8",
+                  borderRadius: 999,
+                  display: "block",
+                  height: 4,
+                  overflow: "hidden",
+                  width: 92,
+                }}
+              >
+                <span
+                  style={{
+                    background: audioLevel > 0.82 ? "#d94c37" : "#548367",
+                    display: "block",
+                    height: "100%",
+                    transition: "width 80ms linear",
+                    width: `${Math.max(3, audioLevel * 100)}%`,
+                  }}
+                />
+              </span>
+            ) : null}
           </span>
           <button
             onClick={resetPreview}
@@ -911,7 +992,9 @@ export function RecordingPanel({
               {formatElapsed(elapsedMs)}
             </span>
           </div>
-          <span style={{ color: "#bbb7af", fontSize: 10 }}>1080p · 30 fps</span>
+          <span style={{ color: "#bbb7af", fontSize: 10 }}>
+            1080p · 60 fps · 256 kbps audio
+          </span>
         </div>
       ) : null}
 
@@ -922,7 +1005,7 @@ export function RecordingPanel({
           icon="mic"
           label="Microphone"
           onChange={setMicrophoneEnabled}
-          supportingText="Include your narration"
+          supportingText="Use the system-default wired, Bluetooth, or built-in mic"
         />
         <ToggleRow
           checked={cameraEnabled}
@@ -953,7 +1036,7 @@ export function RecordingPanel({
               style={{ accentColor: "#d94c37" }}
               type="checkbox"
             />
-            Include shared tab/system audio when available
+            Include shared tab/system sound when available
           </label>
         ) : null}
       </div>

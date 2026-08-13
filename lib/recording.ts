@@ -62,6 +62,7 @@ export interface RecordingStartOptions {
   maxWidth?: number;
   maxHeight?: number;
   videoBitsPerSecond?: number;
+  audioBitsPerSecond?: number;
   preferredMimeTypes?: string[];
   webcam?: Partial<WebcamOverlayOptions>;
   /** Draw a presentation-safe copy of the pen toolbar beside the board. */
@@ -80,6 +81,13 @@ export interface RecordingPreview {
   stream: MediaStream;
   /** Camera-only stream for the visible presenter self-view. */
   cameraStream?: MediaStream;
+  audio: {
+    enabled: boolean;
+    microphoneLabel?: string;
+    systemAudioIncluded: boolean;
+    sampleRate?: number;
+    channelCount?: number;
+  };
   width: number;
   height: number;
 }
@@ -561,16 +569,42 @@ export class WhiteboardRecorder {
       await this.acquireUserMedia(options);
       this.prepareCompositor(options);
       await this.prepareAudioMix(options.includeDisplayAudio ?? false);
+      if (
+        (options.includeMicrophone || options.includeDisplayAudio) &&
+        this.outputStream?.getAudioTracks().length === 0
+      ) {
+        throw new Error(
+          "No audio track was available. Keep Microphone enabled, or share a browser tab with its audio option enabled.",
+        );
+      }
       this.startCompositorLoop();
       if (!this.outputStream || !this.compositorCanvas) {
         throw new Error("The recording preview could not be created.");
       }
       this.setStatus("previewing");
+      const outputAudioTrack = this.outputStream.getAudioTracks()[0];
+      const outputAudioSettings = outputAudioTrack?.getSettings();
+      const microphoneTrack = this.userMediaStream?.getAudioTracks()[0];
       return {
         stream: this.outputStream,
         cameraStream: this.userMediaStream?.getVideoTracks().length
           ? new MediaStream(this.userMediaStream.getVideoTracks())
           : undefined,
+        audio: {
+          enabled: Boolean(outputAudioTrack),
+          microphoneLabel: microphoneTrack?.label || undefined,
+          systemAudioIncluded: Boolean(
+            options.includeDisplayAudio &&
+              this.sourceStream?.getAudioTracks().length,
+          ),
+          sampleRate:
+            outputAudioSettings?.sampleRate ??
+            this.audioContext?.sampleRate ??
+            microphoneTrack?.getSettings().sampleRate,
+          channelCount:
+            outputAudioSettings?.channelCount ??
+            microphoneTrack?.getSettings().channelCount,
+        },
         width: this.compositorCanvas.width,
         height: this.compositorCanvas.height,
       };
@@ -594,7 +628,10 @@ export class WhiteboardRecorder {
 
     try {
       this.mimeType = selectRecordingMimeType(options.preferredMimeTypes);
-      this.createMediaRecorder(options.videoBitsPerSecond);
+      this.createMediaRecorder(
+        options.videoBitsPerSecond,
+        options.audioBitsPerSecond,
+      );
       this.pausedAt = 0;
       this.totalPausedMs = 0;
       this.chunks = [];
@@ -661,6 +698,9 @@ export class WhiteboardRecorder {
       preferCurrentTab: true,
       selfBrowserSurface: "include",
       surfaceSwitching: "include",
+      systemAudio: "include",
+      windowAudio: "system",
+      suppressLocalAudioPlayback: false,
     } as DisplayMediaStreamOptions;
     this.sourceStream = await navigator.mediaDevices.getDisplayMedia(
       displayOptions,
@@ -687,9 +727,19 @@ export class WhiteboardRecorder {
     if (!options.includeMicrophone && !options.includeCamera) return;
 
     const audio: boolean | MediaTrackConstraints = options.includeMicrophone
-      ? options.microphoneDeviceId
-        ? { deviceId: { exact: options.microphoneDeviceId }, echoCancellation: true }
-        : { echoCancellation: true, noiseSuppression: true }
+      ? {
+          ...(options.microphoneDeviceId
+            ? { deviceId: { exact: options.microphoneDeviceId } }
+            : {}),
+          // Ideal constraints preserve compatibility with Bluetooth headsets
+          // while requesting studio-grade capture from capable default inputs.
+          sampleRate: { ideal: 48_000 },
+          sampleSize: { ideal: 24 },
+          channelCount: { ideal: 2 },
+          echoCancellation: { ideal: true },
+          noiseSuppression: { ideal: true },
+          autoGainControl: { ideal: true },
+        }
       : false;
     const video: boolean | MediaTrackConstraints = options.includeCamera
       ? options.cameraDeviceId
@@ -751,19 +801,28 @@ export class WhiteboardRecorder {
       ...(includeDisplayAudio ? this.sourceStream?.getAudioTracks() ?? [] : []),
     ];
     if (audioTracks.length === 0) return;
-    if (audioTracks.length === 1) {
-      this.outputStream.addTrack(audioTracks[0]);
-      return;
-    }
 
     try {
-      this.audioContext = new AudioContext();
+      this.audioContext = new AudioContext({
+        sampleRate: 48_000,
+        latencyHint: "playback",
+      });
       const destination = this.audioContext.createMediaStreamDestination();
+      const compressor = this.audioContext.createDynamicsCompressor();
+      compressor.threshold.value = -8;
+      compressor.knee.value = 12;
+      compressor.ratio.value = 4;
+      compressor.attack.value = 0.003;
+      compressor.release.value = 0.2;
+      compressor.connect(destination);
       for (const track of audioTracks) {
         const source = this.audioContext.createMediaStreamSource(
           new MediaStream([track]),
         );
-        source.connect(destination);
+        const gain = this.audioContext.createGain();
+        // Leave headroom when narration and shared media play together.
+        gain.gain.value = audioTracks.length > 1 ? 0.82 : 1;
+        source.connect(gain).connect(compressor);
       }
       if (this.audioContext.state === "suspended") {
         await this.audioContext.resume();
@@ -905,13 +964,19 @@ export class WhiteboardRecorder {
     context.restore();
   }
 
-  private createMediaRecorder(videoBitsPerSecond?: number): void {
+  private createMediaRecorder(
+    videoBitsPerSecond?: number,
+    audioBitsPerSecond?: number,
+  ): void {
     if (!this.outputStream) throw new Error("The recording output is not ready.");
 
     const recorderOptions: MediaRecorderOptions = {};
     if (this.mimeType) recorderOptions.mimeType = this.mimeType;
     if (videoBitsPerSecond) {
       recorderOptions.videoBitsPerSecond = videoBitsPerSecond;
+    }
+    if (audioBitsPerSecond && this.outputStream.getAudioTracks().length > 0) {
+      recorderOptions.audioBitsPerSecond = audioBitsPerSecond;
     }
 
     this.mediaRecorder = new MediaRecorder(this.outputStream, recorderOptions);
