@@ -1,0 +1,11 @@
+# CanvasRoom
+
+> A browser whiteboard for teaching, drawing and recording, linked from Bodhi Tools as GreenBoard.
+
+- [Open CanvasRoom](https://jeetblahiri.github.io/canvasroom/): drawing, lecture tabs, media attachments, board exports and permission-based recording.
+- [Bodhi Tools](https://tools.bodhiclasses.com/): related teaching software.
+- [Sitemap](https://jeetblahiri.github.io/canvasroom/sitemap.xml): the public application page.
+
+Boards, attachments and recordings remain local to the user's browser and device unless explicitly shared or exported. They are not public crawler content. Do not infer access to private documents from this directory.
+
+This app is hosted under a GitHub Pages project path. Crawler policy is controlled at the host root, https://jeetblahiri.github.io/robots.txt, not by a robots file inside this project.

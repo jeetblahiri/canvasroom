@@ -40,3 +40,19 @@ npm run build:pages
 The generated site is written to `dist-pages/`. The included GitHub Actions workflow builds and deploys that directory whenever `main` is pushed. In the repository settings, choose **GitHub Actions** as the Pages source. The resulting project URL is:
 
 `https://jeetblahiri.github.io/canvasroom/`
+
+
+## Public discovery and offline boundaries
+
+The Pages build includes a canonical application page, initial HTML introduction,
+SoftwareApplication schema, sitemap and optional llms directory. Local boards and
+recordings are never included. GitHub Pages cannot set project-specific HTTP
+security headers, and robots.txt must live at the host root: adding
+`/canvasroom/robots.txt` would not control crawlers. A dedicated Bodhi host would be
+needed for independent HTTP/robots policy. The project sitemap can be submitted
+under its verified Search Console URL prefix.
+
+Pull requests now run the same artifact checks as releases. Only main deploys;
+`release.json` identifies its exact source commit. Offline cache cleanup is scoped
+to this app, private/API requests are not cached, and asset failures never return
+an HTML document in place of JavaScript or media.

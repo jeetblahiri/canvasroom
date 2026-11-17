@@ -3,6 +3,9 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="referrer" content="strict-origin-when-cross-origin" />
+    <link rel="canonical" href="https://jeetblahiri.github.io/canvasroom/" />
+    <meta property="og:url" content="https://jeetblahiri.github.io/canvasroom/" />
     <meta name="theme-color" content="#111513" />
     <meta name="description" content="A local-first connected whiteboard for natural iPad drawing, rich media, and beautifully composed recordings." />
     <meta property="og:type" content="website" />
@@ -14,10 +17,18 @@
     <meta name="twitter:description" content="Your ideas, in motion." />
     <meta name="twitter:image" content="https://jeetblahiri.github.io/canvasroom/og.png" />
     <link rel="manifest" href="%BASE_URL%manifest.webmanifest" />
-    <title>CanvasRoom — your ideas, in motion</title>
+    <title>CanvasRoom | Online whiteboard for teaching and recording</title>
+    <script type="application/ld+json">{"@context":"https://schema.org","@type":"SoftwareApplication","name":"CanvasRoom","url":"https://jeetblahiri.github.io/canvasroom/","applicationCategory":"EducationalApplication","operatingSystem":"Web browser","description":"A browser whiteboard for drawing, media-rich lessons and recordings. Boards and attachments are saved locally on the device."}</script>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <main><h1>CanvasRoom: a whiteboard for teaching and recording</h1>
+        <p>Draw, explain ideas and build media-rich lessons in your browser. CanvasRoom supports pen input, lecture tabs, images, PDFs and recordings of your board.</p>
+        <p>Boards and attachments are saved locally on this device. Export a board document to keep an independent copy. Camera, microphone and screen recording require your permission.</p>
+        <p><a href="https://tools.bodhiclasses.com/">Explore Bodhi teaching tools</a></p>
+        <noscript><p>Enable JavaScript to open the interactive whiteboard. Your private boards and recordings are not published as web pages.</p></noscript>
+      </main>
+    </div>
     <script type="module" src="./main.tsx"></script>
   </body>
 </html>
