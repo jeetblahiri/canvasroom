@@ -3,19 +3,22 @@ name: Deploy CanvasRoom to GitHub Pages
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 concurrency:
-  group: pages
+  group: pages-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   build:
+    permissions:
+      contents: read
+      pages: read
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
@@ -42,9 +45,10 @@ jobs:
           GITHUB_PAGES_BASE_PATH: /canvasroom/
 
       - name: Verify GitHub Pages artifact
-        run: node --test tests/github-pages.test.mjs
+        run: node --test tests/github-pages.test.mjs tests/service-worker.test.mjs
 
       - name: Configure GitHub Pages
+        if: github.event_name != 'pull_request'
         uses: actions/configure-pages@v5
 
       - name: Upload Pages artifact
@@ -53,6 +57,10 @@ jobs:
           path: dist-pages
 
   deploy:
+    permissions:
+      pages: write
+      id-token: write
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}

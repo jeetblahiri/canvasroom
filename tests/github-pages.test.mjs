@@ -26,3 +26,19 @@ test("GitHub Pages artifact includes its scoped PWA and social assets", async ()
   assert.match(serviceWorker, /self\.registration\.scope/);
   assert.ok(socialImage.size > 50_000);
 });
+
+
+test("public discovery describes the application without exposing local boards", async () => {
+  const html = await readFile(new URL("index.html", pagesRoot), "utf8");
+  assert.match(html, /rel="canonical" href="https:\/\/jeetblahiri.github.io\/canvasroom\/"/);
+  assert.equal((html.match(/<h1\b/g) || []).length, 1);
+  assert.match(html, /Boards and attachments are saved locally/);
+  const schema = JSON.parse(html.match(/type="application\/ld\+json">([^]*?)<\/script>/)[1]);
+  assert.equal(schema["@type"], "SoftwareApplication");
+  assert.equal(schema.url, "https://jeetblahiri.github.io/canvasroom/");
+  const sitemap = await readFile(new URL("sitemap.xml", pagesRoot), "utf8");
+  assert.equal((sitemap.match(/<loc>/g) || []).length, 1);
+  assert.match(await readFile(new URL("llms.txt", pagesRoot), "utf8"), /not public crawler content/);
+  const release = JSON.parse(await readFile(new URL("release.json", pagesRoot), "utf8"));
+  assert.match(release.commit, /^[a-f0-9]{40}$/);
+});
